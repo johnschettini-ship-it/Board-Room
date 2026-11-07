@@ -66,7 +66,8 @@ test('1. the pane opens at start and shows the office within 2 s, on every surfa
       expect(raster?.props.rows).toBe(22)
       const bytes = Uint8Array.from(atob(String(raster?.props.cells)), ch => ch.charCodeAt(0))
       expect(bytes.length).toBe(60 * 22 * 12)
-      expect(new DataView(bytes.buffer).getUint32(0, true)).toBe(0x2580)
+      const glyph = new DataView(bytes.buffer).getUint32(0, true)
+      expect(glyph === 0x20 || (glyph >= 0x2580 && glyph <= 0x259f)).toBe(true)
     } else {
       const svg = await ui.find({ type: 'Svg' })
       const src = String(svg?.props.source ?? '')

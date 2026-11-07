@@ -173,29 +173,77 @@ function terminalPng(o: Office): string {
   return png
 }
 
+// Quadrant glyphs by mask (bit 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right
+// set = foreground). All are width-1 BMP block elements.
+const QUAD = [0x20, 0x2598, 0x259d, 0x2580, 0x2596, 0x258c, 0x259e, 0x259b, 0x2597, 0x259a, 0x2590, 0x259c, 0x2584, 0x2599, 0x259f, 0x2588]
+const sampleBuf = new Uint32Array(4096)
+
+/** The most common colour in a frame area: flat pixel-art colours, never muddy blends. */
+function dominant(src: Uint32Array, W: number, x0: number, x1: number, y0: number, y1: number): number {
+  let n = 0
+  for (let y = y0; y < y1; y++) for (let x = x0, i = y * W + x0; x < x1 && n < sampleBuf.length; x++, i++) sampleBuf[n++] = src[i]! & 0xffffff
+  if (n === 1) return sampleBuf[0]!
+  const a = sampleBuf.subarray(0, n).sort()
+  let best = a[0]!, bestRun = 0, run = 0
+  for (let k = 0; k < n; k++) {
+    run = k > 0 && a[k] === a[k - 1] ? run + 1 : 1
+    if (run > bestRun) { bestRun = run; best = a[k]! }
+  }
+  return best
+}
+const dist2 = (p: number, q: number): number => {
+  const dr = ((p >> 16) & 255) - ((q >> 16) & 255), dg = ((p >> 8) & 255) - ((q >> 8) & 255), db = (p & 255) - (q & 255)
+  return dr * dr + dg * dg + db * db
+}
+
 /**
- * The office in coloured half blocks for every other terminal: each cell is
- * '▀' with the upper pixel as its foreground and the lower as its background,
- * each pixel the average of the frame area it covers.
+ * The office in quarter blocks for every other terminal: each cell holds 2x2
+ * samples (the dominant colour of the area each covers) drawn with the block
+ * glyph and the two colours that fit them best, both taken from the art.
  */
 function blockCells(o: Office, columns: number): Cells {
   const f = renderFrame(o)
   const rows = Math.max(4, Math.min(256, Math.round((columns * f.height) / f.width / 2)))
   if (cellCache.no === frameNo && cellCache.zoom === o.zoom && cellCache.columns === columns && cellCache.rows === rows) return cellCache
-  const W = f.width, H = f.height, src = composite(f), V = rows * 2, n = columns * rows * 3
+  const W = f.width, H = f.height, comp = composite(f)
+  const src = new Uint32Array(comp.buffer, comp.byteOffset, comp.length / 4)
+  // Pixels are little-endian RGBA; repack each sample as 0xRRGGBB.
+  const rgb = (v: number): number => ((v & 255) << 16) | (v & 0xff00) | ((v >> 16) & 255)
+  const GX = columns * 2, GY = rows * 2, n = columns * rows * 3
   if (cellBuf.length !== n) cellBuf = new Uint32Array(n)
-  for (let ty = 0; ty < V; ty++) {
-    const y0 = Math.floor((ty * H) / V), y1 = Math.max(y0 + 1, Math.floor(((ty + 1) * H) / V))
-    for (let tx = 0; tx < columns; tx++) {
-      const x0 = Math.floor((tx * W) / columns), x1 = Math.max(x0 + 1, Math.floor(((tx + 1) * W) / columns))
-      let r = 0, g = 0, b = 0, c = 0
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0, i = (y * W + x0) * 4; x < x1; x++, i += 4) { r += src[i]!; g += src[i + 1]!; b += src[i + 2]!; c++ }
+  const q = [0, 0, 0, 0]
+  for (let ry = 0; ry < rows; ry++) {
+    for (let cx = 0; cx < columns; cx++) {
+      for (let k = 0; k < 4; k++) {
+        const gx = cx * 2 + (k & 1), gy = ry * 2 + (k >> 1)
+        const x0 = Math.floor((gx * W) / GX), x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * W) / GX))
+        const y0 = Math.floor((gy * H) / GY), y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * H) / GY))
+        q[k] = rgb(dominant(src, W, x0, x1, y0, y1))
       }
-      const rgb = ((Math.round(r / c) << 16) | (Math.round(g / c) << 8) | Math.round(b / c)) >>> 0
-      const cell = ((ty >> 1) * columns + tx) * 3
-      if (ty & 1) cellBuf[cell + 2] = rgb
-      else { cellBuf[cell] = 0x2580; cellBuf[cell + 1] = rgb }
+      // Try every split of the four samples into two groups; each group is
+      // painted with the one of its own samples that fits the group best.
+      let bestErr = Infinity, bestMask = 0, fg = q[0]!, bg = q[0]!
+      for (let m = 0; m < 8; m++) {
+        let err = 0, cf = q[0]!, cb = q[0]!
+        for (const set of [m, ~m & 15]) {
+          let pick = -1, pickErr = Infinity
+          for (let a = 0; a < 4; a++) {
+            if (!(set >> a & 1)) continue
+            let e = 0
+            for (let b = 0; b < 4; b++) if (set >> b & 1) e += dist2(q[a]!, q[b]!)
+            if (e < pickErr) { pickErr = e; pick = a }
+          }
+          if (pick < 0) continue
+          err += pickErr
+          if (set === m) cf = q[pick]!
+          else cb = q[pick]!
+        }
+        if (err < bestErr) { bestErr = err; bestMask = m; fg = cf; bg = cb }
+      }
+      const cell = (ry * columns + cx) * 3
+      cellBuf[cell] = bestMask ? QUAD[bestMask]! : 0x2588 // one colour: a full block in it
+      cellBuf[cell + 1] = bestMask ? fg : bg
+      cellBuf[cell + 2] = bg
     }
   }
   cellCache = { no: frameNo, zoom: o.zoom, columns, rows, cells: base64(new Uint8Array(cellBuf.buffer, 0, n * 4)) }
@@ -441,19 +489,25 @@ export const register: Register = (on, options) => {
     if (e.surface === 'terminal') {
       const { Box, Text, Button, Image, Raster } = $.ui.resolve(e)
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
+      // Fit the office to the pane: leave two rows under it for the status
+      // line and the ticker, and keep its shape by narrowing it if needed.
+      const f = renderFrame(o)
+      const maxRows = Math.max(6, (e.props.scroll?.bodyRows ?? 40) - 2)
+      const fitCols = Math.floor((maxRows * 2 * f.width) / f.height)
+      const columns = Math.max(20, Math.min(pictures ? 255 : 512, e.props.bodyColumns, fitCols))
       let view
       if (pictures) {
-        const f = renderFrame(o)
-        const columns = Math.max(20, Math.min(255, e.props.bodyColumns))
         const rows = Math.max(6, Math.min(255, Math.round((columns * f.height) / f.width / 2)))
         view = <Image key="view" source={{ png: terminalPng(o) }} columns={columns} rows={rows} alt={alt} />
       } else {
-        const c = blockCells(o, Math.max(20, Math.min(512, e.props.bodyColumns)))
+        const c = blockCells(o, columns)
         view = <Raster key="view" columns={c.columns} rows={c.rows} cells={c.cells} />
       }
       return (
         <Box flexDirection="column">
           {view}
+          <Text color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
+          <Text>{ticker}</Text>
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
             {rooms.map(r => (
@@ -468,8 +522,6 @@ export const register: Register = (on, options) => {
             <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
             <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
           </Box>
-          <Text>{ticker}</Text>
-          <Text color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {crew.map(c => (
               <Box key={`card-${c.id}`} flexDirection="column" width={26}>

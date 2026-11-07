@@ -59,7 +59,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `motion` | auto | `auto` hides confetti and disco when the system asks for reduced motion. `reduced` always calms the office. `full` always shows everything. |
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | Redraws per second, 2 to 10. |
-| `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured half blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
+| `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 
 ## How it works
 
