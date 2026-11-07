@@ -288,11 +288,23 @@ async function tick($: Engine): Promise<void> {
   }
 }
 
+let lastOpenReason = ''
 async function showPane($: Engine): Promise<boolean> {
   const r = await $.ui.open({ id: PANE, title: TITLE })
   paneOpen = true
   frameNo++
+  lastOpenReason = r.isPlaced ? '' : r.reason
   return r.isPlaced
+}
+
+/** Where the engine says the pane is, and why it is not drawn when it is not. */
+async function paneReport($: Engine): Promise<string> {
+  const pane = (await $.ui.panes()).find(p => p.id === PANE)
+  if (!pane) return 'Pane: closed. Run /workplace to show it.'
+  const state = `Pane: open · shown ${pane.isShown ? 'yes' : 'no'} · placed ${pane.isPlaced ? 'yes' : 'no'}`
+  if (pane.isPlaced) return state
+  if (!lastOpenReason) { const r = await $.ui.open({ id: PANE, title: TITLE }); lastOpenReason = r.isPlaced ? '' : r.reason }
+  return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
 function summary(o: Office): string {
@@ -343,7 +355,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'workplace' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
-    if (arg === 'status') return { text: summary(ensureOffice()) }
+    if (arg === 'status') return { text: `${summary(ensureOffice())}\n${await paneReport($)}` }
     // A bare /workplace hides the pane only when it is really on screen; an
     // open pane on a hidden tab, or one waiting for room, is brought forward.
     const pane = (await $.ui.panes()).find(p => p.id === PANE)
@@ -351,7 +363,7 @@ export const register: Register = (on, options) => {
     const show = arg === 'show' || arg === 'open' || (arg !== 'hide' && arg !== 'close' && !onScreen)
     if (show) {
       const placed = await showPane($)
-      return { text: placed ? 'Digital Workplace pane shown.' : 'Digital Workplace pane opened; it shows once there is room for it.' }
+      return { text: placed ? 'Digital Workplace pane shown.' : `Digital Workplace pane opened but not drawn yet. Engine says: ${lastOpenReason}` }
     }
     paneOpen = false
     await $.ui.close({ id: PANE })
@@ -379,7 +391,7 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: 'mcp__digital-workplace__crew_status' }, async () => ({ result: summary(ensureOffice()) }))
+  on('tool.call', { tool: 'mcp__digital-workplace__crew_status' }, async $ => ({ result: `${summary(ensureOffice())}\n${await paneReport($)}` }))
     .catch(($, e, next) => (next.called ? next(e) : { result: 'The Digital Workplace status is not available right now.' }))
 
   on('tool.call', async ($, e, next) => {
