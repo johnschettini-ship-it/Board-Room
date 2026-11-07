@@ -9,24 +9,27 @@
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
-import { classifyText, routeTool, type Route } from './classify.ts'
-import type { Card, Frame, Motion, Office, Sfx, StatusLine, ThemeId } from './types.ts'
+import { filmSvg, shoot, type Film } from './stage.ts'
+import { routeTool, type Route } from './classify.ts'
+import type { Card, Frame, MachineInfo, Motion, Office, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
 const TITLE = 'Digital Workplace'
 const SELF_PREFIX = `mcp__${PLUGIN}__`
 const SVG_LIMIT = 131072
+/** Blocks the app can put ahead of the person's words in a prompt (multiline, non-greedy). */
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt }
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -50,6 +53,16 @@ let termPng = { no: -1, zoom: 0, png: '' }
 let cellCache: Cells = { no: -1, zoom: 0, columns: 0, rows: 0, cells: '' }
 let cellBuf = new Uint32Array(0)
 let composed = new Uint8ClampedArray(0)
+// The Svg surfaces' film (stage.ts) and when it was shot, in office seconds.
+let film: Film | null = null
+let lastShot = -Infinity
+let forceShot = false
+// Frames per second of the next film: halved after a film was cut short (busy rooms), back up after a full one.
+let filmFps = 0
+let paneSig = ''
+// Which surfaces draw the pane: null until known (then films and full-rate redraws both run).
+let surfaceKinds: readonly string[] | null = null
+let surfacesAt = -Infinity
 /** What this terminal can draw: pictures (kitty, Ghostty), pictures in fullscreen (iTerm2), or blocks. */
 let termArt: 'image' | 'iterm' | 'blocks' = 'blocks'
 
@@ -82,6 +95,60 @@ function statusText(s: StatusLine): string {
   return '○ Crew idle'
 }
 
+// ---- truth strip, compute rows, status line (native text: readable, cheap) ----
+type Line = { key: string; text: string; color?: string; dim?: boolean }
+const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+function stripLines(st: StripInfo): Line[] {
+  const out: Line[] = []
+  if (st.receipt) {
+    const clean = st.receipt.startsWith('Done') && !st.failures.length
+    out.push({ key: 'h', text: `${clean ? '✓' : st.receipt.startsWith('Done') ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
+  }
+  else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
+  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
+  else if (st.open) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
+  else out.push({ key: 'h', text: '○ Crew idle', dim: true })
+  // Same shape as the old status line: name (role) · raw tool · target · time.
+  for (const r of st.running.slice(0, 4)) {
+    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}`
+    out.push(r.waiting
+      ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · asked for your OK`, color: '#f4b942' }
+      : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
+  }
+  if (st.running.length > 4) out.push({ key: 'rm', text: `  +${st.running.length - 4} more running`, dim: true })
+  for (const f of st.failures.slice(0, 2)) out.push({ key: `f${f.id}`, text: `✗ ${f.name} (${f.role}) · ${f.tool}${f.label ? ` · ${f.label}` : ''} failed`, color: '#ff6b6b' })
+  if (st.failures.length > 2) out.push({ key: 'fm', text: `  +${st.failures.length - 2} more failed`, color: '#ff6b6b' })
+  if (st.open && !st.running.length && !st.failures.length && st.recent[0]) {
+    const r = st.recent[0]
+    out.push({ key: 'rc', text: `○ ${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''} · took ${mmss(r.seconds)}`, dim: true })
+  }
+  return out
+}
+function machineLine(m: MachineInfo): Line {
+  const indent = m.key === 'main' ? '' : '  '
+  const head = `${indent}${m.on ? '●' : '○'} ${m.name} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
+  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req · ${mmss(m.seconds)}`, color: m.color }
+  const u: Usage | null = m.usage
+  const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
+  return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
+}
+function computeLines(o: Office): Line[] {
+  const mi = o.machines()
+  if (!mi.list.length) return []
+  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on`, dim: true }, ...mi.list.map(machineLine)]
+  if (mi.more) out.push({ key: 'cm', text: `  +${mi.more} more machines`, dim: true })
+  return out
+}
+function statusBar(o: Office): string | undefined {
+  const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
+  const r = st.running.find(x => x.waiting) ?? st.running[st.running.length - 1]
+  if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${r.waiting ? ' · asked for your OK' : ''}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
+  if (st.thinking !== null) return `Workplace: Nova thinking ${mmss(st.thinking)}${power}`
+  if (st.receipt && st.turnSeconds >= 0 && o.ticker().phase !== 'Idle') return `Workplace: ${st.receipt}`
+  return undefined
+}
+const chips = new Map<string, { text: string; color: string }>()
+
 // ---- plan cards ----
 function openCards(): Card[] {
   const all = [...todoCards, ...taskCards.values()]
@@ -94,7 +161,7 @@ function planBefore(tool: string, input: Record<string, unknown>): boolean {
   if (tool === 'TodoWrite' && Array.isArray(input.todos)) {
     todoCards = (input.todos as { content?: unknown; status?: unknown }[]).slice(0, 24).map((t, i) => {
       const title = String(t?.content ?? '')
-      return { id: `todo-${i}`, title, role: classifyText(title), status: asStatus(t?.status), seen: missionNo }
+      return { id: `todo-${i}`, title, role: 'none', status: asStatus(t?.status), seen: missionNo }
     })
     return true
   }
@@ -102,7 +169,7 @@ function planBefore(tool: string, input: Record<string, unknown>): boolean {
     if (input.status === 'deleted') return taskCards.delete(input.taskId)
     const c = taskCards.get(input.taskId)
     const title = typeof input.subject === 'string' ? input.subject : c?.title ?? `Task ${input.taskId}`
-    taskCards.set(input.taskId, { id: `task-${input.taskId}`, title, role: c && title === c.title ? c.role : classifyText(title), status: input.status ? asStatus(input.status) : c?.status ?? 'pending', seen: missionNo })
+    taskCards.set(input.taskId, { id: `task-${input.taskId}`, title, role: 'none', status: input.status ? asStatus(input.status) : c?.status ?? 'pending', seen: missionNo })
     return true
   }
   return false
@@ -113,7 +180,7 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
     const task = (r.task ?? {}) as { id?: unknown; subject?: unknown }
     const id = String(task.id ?? `local-${taskCards.size + 1}`)
     const title = String(task.subject ?? input.subject ?? '')
-    taskCards.set(id, { id: `task-${id}`, title, role: classifyText(`${title} ${String(input.description ?? '')}`), status: 'pending', seen: missionNo })
+    taskCards.set(id, { id: `task-${id}`, title, role: 'none', status: 'pending', seen: missionNo })
     return true
   }
   if (tool === 'TaskList' && Array.isArray(r.tasks)) {
@@ -122,7 +189,7 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
       if (!id) continue
       const prev = taskCards.get(id)
       const title = String(t.subject ?? prev?.title ?? '')
-      taskCards.set(id, { id: `task-${id}`, title, role: prev?.role ?? classifyText(title), status: asStatus(t.status), seen: prev?.seen ?? missionNo })
+      taskCards.set(id, { id: `task-${id}`, title, role: 'none', status: asStatus(t.status), seen: prev?.seen ?? missionNo })
     }
     return true
   }
@@ -173,29 +240,77 @@ function terminalPng(o: Office): string {
   return png
 }
 
+// Quadrant glyphs by mask (bit 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right
+// set = foreground). All are width-1 BMP block elements.
+const QUAD = [0x20, 0x2598, 0x259d, 0x2580, 0x2596, 0x258c, 0x259e, 0x259b, 0x2597, 0x259a, 0x2590, 0x259c, 0x2584, 0x2599, 0x259f, 0x2588]
+const sampleBuf = new Uint32Array(4096)
+
+/** The most common colour in a frame area: flat pixel-art colours, never muddy blends. */
+function dominant(src: Uint32Array, W: number, x0: number, x1: number, y0: number, y1: number): number {
+  let n = 0
+  for (let y = y0; y < y1; y++) for (let x = x0, i = y * W + x0; x < x1 && n < sampleBuf.length; x++, i++) sampleBuf[n++] = src[i]! & 0xffffff
+  if (n === 1) return sampleBuf[0]!
+  const a = sampleBuf.subarray(0, n).sort()
+  let best = a[0]!, bestRun = 0, run = 0
+  for (let k = 0; k < n; k++) {
+    run = k > 0 && a[k] === a[k - 1] ? run + 1 : 1
+    if (run > bestRun) { bestRun = run; best = a[k]! }
+  }
+  return best
+}
+const dist2 = (p: number, q: number): number => {
+  const dr = ((p >> 16) & 255) - ((q >> 16) & 255), dg = ((p >> 8) & 255) - ((q >> 8) & 255), db = (p & 255) - (q & 255)
+  return dr * dr + dg * dg + db * db
+}
+
 /**
- * The office in coloured half blocks for every other terminal: each cell is
- * '▀' with the upper pixel as its foreground and the lower as its background,
- * each pixel the average of the frame area it covers.
+ * The office in quarter blocks for every other terminal: each cell holds 2x2
+ * samples (the dominant colour of the area each covers) drawn with the block
+ * glyph and the two colours that fit them best, both taken from the art.
  */
 function blockCells(o: Office, columns: number): Cells {
   const f = renderFrame(o)
   const rows = Math.max(4, Math.min(256, Math.round((columns * f.height) / f.width / 2)))
   if (cellCache.no === frameNo && cellCache.zoom === o.zoom && cellCache.columns === columns && cellCache.rows === rows) return cellCache
-  const W = f.width, H = f.height, src = composite(f), V = rows * 2, n = columns * rows * 3
+  const W = f.width, H = f.height, comp = composite(f)
+  const src = new Uint32Array(comp.buffer, comp.byteOffset, comp.length / 4)
+  // Pixels are little-endian RGBA; repack each sample as 0xRRGGBB.
+  const rgb = (v: number): number => ((v & 255) << 16) | (v & 0xff00) | ((v >> 16) & 255)
+  const GX = columns * 2, GY = rows * 2, n = columns * rows * 3
   if (cellBuf.length !== n) cellBuf = new Uint32Array(n)
-  for (let ty = 0; ty < V; ty++) {
-    const y0 = Math.floor((ty * H) / V), y1 = Math.max(y0 + 1, Math.floor(((ty + 1) * H) / V))
-    for (let tx = 0; tx < columns; tx++) {
-      const x0 = Math.floor((tx * W) / columns), x1 = Math.max(x0 + 1, Math.floor(((tx + 1) * W) / columns))
-      let r = 0, g = 0, b = 0, c = 0
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0, i = (y * W + x0) * 4; x < x1; x++, i += 4) { r += src[i]!; g += src[i + 1]!; b += src[i + 2]!; c++ }
+  const q = [0, 0, 0, 0]
+  for (let ry = 0; ry < rows; ry++) {
+    for (let cx = 0; cx < columns; cx++) {
+      for (let k = 0; k < 4; k++) {
+        const gx = cx * 2 + (k & 1), gy = ry * 2 + (k >> 1)
+        const x0 = Math.floor((gx * W) / GX), x1 = Math.max(x0 + 1, Math.floor(((gx + 1) * W) / GX))
+        const y0 = Math.floor((gy * H) / GY), y1 = Math.max(y0 + 1, Math.floor(((gy + 1) * H) / GY))
+        q[k] = rgb(dominant(src, W, x0, x1, y0, y1))
       }
-      const rgb = ((Math.round(r / c) << 16) | (Math.round(g / c) << 8) | Math.round(b / c)) >>> 0
-      const cell = ((ty >> 1) * columns + tx) * 3
-      if (ty & 1) cellBuf[cell + 2] = rgb
-      else { cellBuf[cell] = 0x2580; cellBuf[cell + 1] = rgb }
+      // Try every split of the four samples into two groups; each group is
+      // painted with the one of its own samples that fits the group best.
+      let bestErr = Infinity, bestMask = 0, fg = q[0]!, bg = q[0]!
+      for (let m = 0; m < 8; m++) {
+        let err = 0, cf = q[0]!, cb = q[0]!
+        for (const set of [m, ~m & 15]) {
+          let pick = -1, pickErr = Infinity
+          for (let a = 0; a < 4; a++) {
+            if (!(set >> a & 1)) continue
+            let e = 0
+            for (let b = 0; b < 4; b++) if (set >> b & 1) e += dist2(q[a]!, q[b]!)
+            if (e < pickErr) { pickErr = e; pick = a }
+          }
+          if (pick < 0) continue
+          err += pickErr
+          if (set === m) cf = q[pick]!
+          else cb = q[pick]!
+        }
+        if (err < bestErr) { bestErr = err; bestMask = m; fg = cf; bg = cb }
+      }
+      const cell = (ry * columns + cx) * 3
+      cellBuf[cell] = bestMask ? QUAD[bestMask]! : 0x2588 // one colour: a full block in it
+      cellBuf[cell + 1] = bestMask ? fg : bg
+      cellBuf[cell + 2] = bg
     }
   }
   cellCache = { no: frameNo, zoom: o.zoom, columns, rows, cells: base64(new Uint8Array(cellBuf.buffer, 0, n * 4)) }
@@ -268,6 +383,63 @@ function setSound($: Engine, on: boolean): void {
   })
 }
 
+/** Frames rendered during a film are future frames: the per-frame caches must not keep them. */
+function dropFrameCaches(): void {
+  rendered = null
+  cache = { ...cache, no: -1 }
+  termPng = { ...termPng, no: -1 }
+  cellCache = { ...cellCache, no: -1 }
+  lastPixels = null
+}
+
+/**
+ * The current film, shot again when it runs out, after an outside event (at
+ * most once a second, L2 in the design verdict), or at once after a press.
+ */
+function currentFilm(o: Office): { film: Film | null; fresh: boolean } {
+  const idle = o.ticker().phase === 'Idle'
+  const elapsed = film ? o.simT - film.startT : 0
+  const due = !film || forceShot || film.zoom !== o.zoom ||
+    // the camera cuts to another room: the next film starts there, gate or not
+    (film.cutAt !== null && elapsed >= film.cutAt - 1e-6) ||
+    (o.simT - lastShot >= 1 && (o.version !== film.version || elapsed >= film.seconds - 0.5))
+  if (!due) return { film, fresh: false }
+  // Set first: a shot that throws must not be retried on every tick.
+  lastShot = o.simT
+  forceShot = false
+  const rate = frameRate()
+  if (!filmFps) filmFps = rate
+  const fps = idle ? Math.max(2, Math.round(filmFps / 2)) : filmFps
+  try {
+    film = shoot(o, fps, idle ? 6 : 2, SVG_LIMIT - 4096, opts.motion)
+    filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(rate, filmFps * 2)
+  } catch {
+    // Keep the last film (or none: the pane then draws a single frame).
+  } finally {
+    dropFrameCaches()
+  }
+  return { film, fresh: true }
+}
+/** The frameRate setting, clamped to 2-10 like the tick. */
+const frameRate = (): number => Math.min(10, Math.max(2, Math.round(opts.frameRate) || 8))
+
+/** What the Svg surfaces show as text and buttons: they redraw only when it changes. */
+function signature(o: Office): string {
+  const t = o.ticker()
+  return [
+    stripLines(o.strip()).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
+    `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
+    o.rooms().map(r => `${r.current}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
+  ].join('#')
+}
+
+async function surfacesNow($: Engine, simT: number): Promise<readonly string[] | null> {
+  if (simT - surfacesAt < 5) return surfaceKinds
+  surfacesAt = simT
+  try { surfaceKinds = await $.session.surfaces() } catch { surfaceKinds = null }
+  return surfaceKinds
+}
+
 async function tick($: Engine): Promise<void> {
   if (busy) return
   busy = true
@@ -280,7 +452,22 @@ async function tick($: Engine): Promise<void> {
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
-    if (paneOpen) $.ui.invalidate('ui.render')
+    if (paneOpen) {
+      const kinds = await surfacesNow($, o.simT)
+      const terminal = kinds === null || kinds.includes('terminal')
+      const pictures = kinds === null || kinds.some(k => k !== 'terminal')
+      let redraw = false
+      // Svg surfaces play a film on their own: redraw for a new film or new text only.
+      if (pictures) {
+        const sig = signature(o)
+        if (currentFilm(o).fresh || sig !== paneSig) { paneSig = sig; redraw = true }
+      }
+      // Terminals redraw every frame; an idle office needs only a quarter of the rate.
+      if (terminal && (o.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      if (redraw) $.ui.invalidate('ui.render')
+    }
+    const bar = statusBar(o)
+    if (bar !== lastStatus) { lastStatus = bar; $.ui.status(bar) }
   } catch {
     // A failed frame is skipped; the next tick tries again.
   } finally {
@@ -289,6 +476,8 @@ async function tick($: Engine): Promise<void> {
 }
 
 let lastOpenReason = ''
+let lastStatus: string | undefined
+const agentsAsked = new Set<string>()
 async function showPane($: Engine): Promise<boolean> {
   const r = await $.ui.open({ id: PANE, title: TITLE })
   paneOpen = true
@@ -307,6 +496,13 @@ async function paneReport($: Engine): Promise<string> {
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
+async function describeAgent($: Engine, id: string): Promise<void> {
+  try {
+    const a = (await $.agent.list()).find(x => x.id === id)
+    if (a) ensureOffice().machineInfo(id, { type: a.type, description: a.description, parentId: a.parentId })
+  } catch { /* the label just stays generic */ }
+}
+
 function summary(o: Office): string {
   const s = o.snapshot()
   const status = new Map(o.crew().map(c => [c.id, c.status]))
@@ -316,6 +512,9 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}`),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
+    'Strip:',
+    ...stripLines(s.strip).map(l => `  ${l.text}`),
+    ...computeLines(o).map(l => `  ${l.text}`),
     'Recent:',
     ...s.log.slice(-8).map(l => `  ${s.simT - l.t < 0.05 ? 'now' : `${(s.simT - l.t).toFixed(1)}s ago`} · ${l.text}`),
   ].join('\n')
@@ -328,6 +527,7 @@ export const register: Register = (on, options) => {
     theme: options.theme === 'night' || options.theme === 'sunset' || options.theme === 'day' ? options.theme : 'auto',
     frameRate: typeof options.frameRate === 'number' ? options.frameRate : 8,
     terminalArt: options.terminalArt === 'blocks' || options.terminalArt === 'image' ? options.terminalArt : 'auto',
+    toolChips: options.toolChips === true,
   }
 
   on('session.start', async ($, e, next) => {
@@ -342,7 +542,7 @@ export const register: Register = (on, options) => {
       })
       if (!started) {
         started = true
-        const ms = Math.round(1000 / Math.min(10, Math.max(2, opts.frameRate)))
+        const ms = Math.round(1000 / frameRate())
         $.clock.every(ms, () => void tick($))
       }
       paneOpen = (await $.ui.panes()).some(p => p.id === PANE)
@@ -363,7 +563,10 @@ export const register: Register = (on, options) => {
     const show = arg === 'show' || arg === 'open' || (arg !== 'hide' && arg !== 'close' && !onScreen)
     if (show) {
       const placed = await showPane($)
-      return { text: placed ? 'Digital Workplace pane shown.' : `Digital Workplace pane opened but not drawn yet. Engine says: ${lastOpenReason}` }
+      if (placed) return { text: 'Digital Workplace pane shown.' }
+      // Kept to one short line: Claude reads command replies too.
+      if (lastOpenReason.startsWith('no-surface')) return { text: 'No drawing surface in this session (cloud sessions cannot show mod panes). Open it in a local desktop or terminal session to see the office.' }
+      return { text: `Digital Workplace pane opened but not drawn yet. Engine says: ${lastOpenReason}` }
     }
     paneOpen = false
     await $.ui.close({ id: PANE })
@@ -380,7 +583,9 @@ export const register: Register = (on, options) => {
       if (!e.isMeta && !e.command && e.text.trim()) {
         missionNo++
         const o = ensureOffice()
-        o.startMission(e.text)
+        // Title the mission from the person's own words, not app-injected
+        // reminders; with nothing left, startMission falls back to 'Untitled task'.
+        o.startMission(e.text.replace(SYSTEM_REMINDER, '').trim())
         const open = openCards()
         if (open.length) o.setCards(open)
         frameNo++
@@ -412,18 +617,79 @@ export const register: Register = (on, options) => {
       return ran
     } finally {
       // Runs on success, failure and abort alike, so no crew member is left working.
-      if (opened) { try { ensureOffice().toolEnd(id, ok) } catch { /* ignore */ } }
+      if (opened) {
+        try {
+          const o = ensureOffice()
+          const info = o.toolRole(id)
+          o.toolEnd(id, ok)
+          if (info && opts.toolChips) {
+            chips.set(id, { text: `${info.name} · ${info.tool}${info.label ? ` ${info.label}` : ''} ${ok ? '✓' : '✗'} ${mmss(info.seconds)}`, color: info.color })
+            if (chips.size > 500) chips.delete(chips.keys().next().value!)
+          }
+        } catch { /* ignore */ }
+      }
     }
   }).catch(($, e, next) => next(e))
 
+  on('turn.start', ($, e, next) => {
+    try { if (!e.agentId) ensureOffice().turnStart() } catch { /* never in the way of a turn */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Each model request powers its machine (main loop or subagent) on; the
+  // stream itself passes through untouched.
+  on('turn.step', async function* ($, e, next) {
+    const key = e.agentId ?? 'main'
+    try {
+      ensureOffice().machineStep(key, e.model, e.effort)
+      if (e.agentId && !agentsAsked.has(e.agentId)) { agentsAsked.add(e.agentId); void describeAgent($, e.agentId) }
+    } catch { /* never in the way of a turn */ }
+    try {
+      return yield* next(e)
+    } finally {
+      try { ensureOffice().machineStepEnd(key) } catch { /* ignore */ }
+    }
+  })
+
   on('turn.complete', ($, e, next) => {
     try {
-      if (!e.agentId) ensureOffice().turnEnd(e.reason)
+      const o = ensureOffice()
+      const usage = (e.usage ?? null) as Usage | null
+      if (e.agentId) o.machineDone(e.agentId, usage, e.durationMs)
+      else { o.machineDone('main', usage, e.durationMs); o.turnEnd(e.reason) }
     } catch {
       // never in the way of a turn
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // The permission dialog is about to show: that call is waiting on the person, not working.
+  // A settings hook may decide first; only an undecided request reaches the
+  // person. No event says when they answer, so the mark reads "asked for your
+  // OK", which stays true after they approve and the tool runs.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      const decided = r as { decision?: unknown; block?: unknown } | undefined
+      if (decided?.decision === undefined && !decided?.block && ensureOffice().markWaiting(String(e.tool_name))) frameNo++
+    } catch { /* never in the way */ }
+    return r
+  }).catch(($, e, next) => next(e))
+
+  if (opts.toolChips) {
+    on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+      const row = await next(e)
+      const chip = chips.get(e.requestId)
+      if (!chip) return row
+      const { Box, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          {row}
+          <Text color={chip.color} dimColor>{chip.text}</Text>
+        </Box>
+      )
+    }).catch(($, e, next) => next(e))
+  }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const o = ensureOffice()
@@ -433,27 +699,39 @@ export const register: Register = (on, options) => {
     const crew = o.crew()
     const here = rooms.find(r => r.current)?.name ?? ''
     const alt = `Digital Workplace office, ${here} in view. ${statusText(s).slice(2)}`
-    const redraw = (): void => { frameNo++; $.ui.invalidate('ui.render') }
+    const redraw = (): void => { frameNo++; forceShot = true; $.ui.invalidate('ui.render') }
     const beat = ['▪▫▫▫', '▫▪▫▫', '▫▫▪▫', '▫▫▫▪'][t.beat] ?? '▫▫▫▫'
     const ticker = `${t.phase}  ${beat}${t.total ? `  ${t.done}/${t.total} cards` : ''}  Duets ${t.duets}  ${t.clock}`
-    const statusColor = s.state === 'idle' ? undefined : s.color
 
     if (e.surface === 'terminal') {
       const { Box, Text, Button, Image, Raster } = $.ui.resolve(e)
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
+      // Fit the office to the pane: leave two rows under it for the status
+      // line and the ticker, and keep its shape by narrowing it if needed.
+      const strip = stripLines(o.strip())
+      const compute = computeLines(o)
+      const bodyRows = e.props.scroll?.bodyRows ?? 40
+      // Too small for pixels: the strip and compute rows alone stay readable.
+      const office = e.props.bodyColumns >= 40 && bodyRows >= 14
+      const f = renderFrame(o)
+      const maxRows = Math.max(6, bodyRows - 2 - strip.length)
+      const fitCols = Math.floor((maxRows * 2 * f.width) / f.height)
+      const columns = Math.max(20, Math.min(pictures ? 255 : 512, e.props.bodyColumns, fitCols))
       let view
-      if (pictures) {
-        const f = renderFrame(o)
-        const columns = Math.max(20, Math.min(255, e.props.bodyColumns))
+      if (!office) view = null
+      else if (pictures) {
         const rows = Math.max(6, Math.min(255, Math.round((columns * f.height) / f.width / 2)))
         view = <Image key="view" source={{ png: terminalPng(o) }} columns={columns} rows={rows} alt={alt} />
       } else {
-        const c = blockCells(o, Math.max(20, Math.min(512, e.props.bodyColumns)))
+        const c = blockCells(o, columns)
         view = <Raster key="view" columns={c.columns} rows={c.rows} cells={c.cells} />
       }
       return (
         <Box flexDirection="column">
+          {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
           {view}
+          <Text>{ticker}</Text>
+          {compute.map(l => <Text key={`c-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
             {rooms.map(r => (
@@ -468,8 +746,6 @@ export const register: Register = (on, options) => {
             <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
             <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
           </Box>
-          <Text>{ticker}</Text>
-          <Text color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {crew.map(c => (
               <Box key={`card-${c.id}`} flexDirection="column" width={26}>
@@ -485,10 +761,16 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
-    const f = encodeFrame(o)
+    const cur = currentFilm(o).film
+    const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
+    const strip = stripLines(o.strip())
+    const compute = computeLines(o)
     return (
       <Box flexDirection="column" gap={1}>
-        <Svg source={f.svg} alt={alt} />
+        <Box key="strip" flexDirection="column">
+          {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+        </Box>
+        <Svg source={svg} alt={alt} />
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
           {rooms.map(r => (
@@ -505,7 +787,11 @@ export const register: Register = (on, options) => {
           <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
         </Box>
         <Text mono size="footnote">{ticker}</Text>
-        <Text mono size="footnote" color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
+        {compute.length > 0 && (
+          <Box key="compute" flexDirection="column">
+            {compute.map(l => <Text key={`c-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+          </Box>
+        )}
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">

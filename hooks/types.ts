@@ -1,7 +1,7 @@
 // The typed surface of the office simulation (world.ts).
 import type { Px } from './raster.ts'
 
-export type RoleId = 'lead' | 'research' | 'design' | 'build' | 'review' | 'qa'
+export type RoleId = 'lead' | 'research' | 'design' | 'build' | 'review' | 'qa' | 'none'
 export type Motion = 'auto' | 'full' | 'reduced'
 export type ThemeId = 'night' | 'sunset' | 'day'
 export type Sfx = 'start' | 'done' | 'duet' | 'bug' | 'ship' | 'clap'
@@ -45,6 +45,32 @@ export type StatusLine =
 
 export type Card = { id: string; title: string; role: RoleId; status: 'pending' | 'in_progress' | 'completed' }
 
+export type Who = { name: string; role: string; color: string; tool: string; label: string }
+export type StripInfo = {
+  open: boolean
+  thinking: number | null
+  turnSeconds: number
+  running: (Who & { id: string; seconds: number; waiting: boolean })[]
+  failures: (Who & { id: string })[]
+  recent: (Who & { id: string; ok: boolean; seconds: number })[]
+  receipt: string | null
+}
+export type Usage = { model?: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+export type MachineInfo = {
+  key: string
+  name: string
+  description: string
+  model: string
+  effort: string
+  color: string
+  on: boolean
+  requests: number
+  parentId: string | null
+  seconds: number
+  usage: Usage | null
+}
+export type MachinesInfo = { list: MachineInfo[]; more: number; on: number }
+
 export type Snapshot = {
   simT: number
   phase: string | null
@@ -76,11 +102,21 @@ export type Snapshot = {
   ticker: Ticker
   log: { t: number; text: string; role: RoleId | null }[]
   announce: string
+  strip: StripInfo
+  machines: MachinesInfo
 }
 
 export interface Office {
   advance(seconds: number): void
   render(): Frame
+  /**
+   * Films `count` frames `dt` seconds apart from now, then rewinds; the live
+   * run then replays the same random draws until the next outside event.
+   * onFrame may return false to stop early. Returns the frames filmed.
+   */
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, camX: number) => boolean | void, cut?: boolean): number
+  /** Bumped by every outside event, press or setting change. */
+  readonly version: number
   readonly zoom: number
   setZoom(z: number): void
   readonly autoCam: boolean
@@ -107,5 +143,14 @@ export interface Office {
   bug(from?: RoleId, to?: RoleId, title?: string): void
   turnEnd(reason?: string): void
   setCards(cards: Card[]): void
+  turnStart(): void
+  markWaiting(tool: string): boolean
+  machineStep(key: string, model: string, effort?: string | number): void
+  machineStepEnd(key: string): void
+  machineDone(key: string, usage?: Usage | null, durationMs?: number): void
+  machineInfo(key: string, info: { type?: string; description?: string; parentId?: string }): void
+  strip(): StripInfo
+  machines(): MachinesInfo
+  toolRole(id: string): (Who & { ok: boolean | null; seconds: number }) | null
   readonly simT: number
 }

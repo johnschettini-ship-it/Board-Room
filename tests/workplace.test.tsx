@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
+import { bashLabel, classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -16,13 +16,15 @@ const say = (...a: unknown[]): void => (globalThis as { console?: { log(...x: un
 const prompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
 /** The world beneath the plugin: an engine that places panes, a mocked clock, a tool that answers. */
-function world(on: On, shown = true) {
+function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   const clock = mock.clock(on)
+  const hold = { release: (): void => {} }
+  const perm: { decision?: unknown } = {}
   const panes = new Set<string>()
   const counts = { invalidate: 0, audio: 0 }
   on('command.register', () => ({ value: { command: 'workplace' } }))
   on('tool.register', () => ({ value: { tool: STATUS } }))
-  on('ui.open', (_, e) => { panes.add(e.id); return { value: { isPlaced: true } } })
+  on('ui.open', (_, e) => { if (openReason) return { value: { isPlaced: false, reason: openReason } }; panes.add(e.id); return { value: { isPlaced: true } } })
   on('ui.panes', () => ({ value: [...panes].map(id => ({ id, title: 'Digital Workplace', isShown: shown, isFocused: false, isPlaced: true })) }))
   on('ui.close', (_, e) => { panes.delete(e.id); return { value: undefined } })
   on('ui.invalidate', () => { counts.invalidate++; return { value: undefined } })
@@ -30,13 +32,28 @@ function world(on: On, shown = true) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('ui.status', () => ({ value: undefined }))
+  if (surfaces) on('session.surfaces', () => ({ value: surfaces as never }))
+  on('classic.PermissionRequest', () => (perm.decision ? { decision: perm.decision } : {}) as never)
+  on('ui.render', { component: 'ToolUse' }, ($, e) => { const { Text } = $.ui.resolve(e); return <Text>row</Text> })
   on('tool.call', (_, e) => {
     const cmd = String((e as { command?: unknown }).command ?? '')
     if (e.tool === 'Bash' && /fail/.test(cmd)) return { isError: true as const, result: 'Exit code 1', text: 'Exit code 1\n1 failing' }
+    if (e.tool === 'Bash' && /hold/.test(cmd)) return new Promise(r => { hold.release = () => r({ result: { ok: true, tool: e.tool } }) })
     if (e.tool === 'TaskCreate') return { result: { task: { id: '7', subject: String((e as { subject?: unknown }).subject) } } }
     return { result: { ok: true, tool: e.tool } }
   })
-  return { clock, panes, counts }
+  on('agent.list', () => ({ value: [{ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' }] }))
+  // A model request that streams one chunk, then waits until the test lets it finish.
+  const step = { release: (): void => {} }
+  on('turn.step', async function* (_, e) {
+    const gate = new Promise<void>(r => { step.release = r })
+    yield { kind: 'text', index: 0, text: '…' }
+    await gate
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  return { clock, panes, counts, hold, step, perm }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -66,7 +83,8 @@ test('1. the pane opens at start and shows the office within 2 s, on every surfa
       expect(raster?.props.rows).toBe(22)
       const bytes = Uint8Array.from(atob(String(raster?.props.cells)), ch => ch.charCodeAt(0))
       expect(bytes.length).toBe(60 * 22 * 12)
-      expect(new DataView(bytes.buffer).getUint32(0, true)).toBe(0x2580)
+      const glyph = new DataView(bytes.buffer).getUint32(0, true)
+      expect(glyph === 0x20 || (glyph >= 0x2580 && glyph <= 0x259f)).toBe(true)
     } else {
       const svg = await ui.find({ type: 'Svg' })
       const src = String(svg?.props.source ?? '')
@@ -86,8 +104,13 @@ test('1. the pane opens at start and shows the office within 2 s, on every surfa
   const ms = performance.now() - t0
   say(`pane open + first frame on 4 surfaces: ${ms.toFixed(0)} ms`)
   expect(ms).toBeLessThan(2000)
-  // and it keeps redrawing on the timer
-  const before = w.counts.invalidate
+  // and it keeps redrawing on the timer: slowly while idle, at the full rate while busy
+  let before = w.counts.invalidate
+  await w.clock.advance(1000)
+  expect(w.counts.invalidate - before).toBeGreaterThanOrEqual(2)
+  expect(w.counts.invalidate - before).toBeLessThan(7)
+  await $.prompt.submit(prompt('Go'))
+  before = w.counts.invalidate
   await w.clock.advance(1000)
   expect(w.counts.invalidate - before).toBeGreaterThanOrEqual(7)
 })
@@ -100,7 +123,7 @@ test('2. a prompt starts the boardroom briefing', async ($, on) => {
   let s = await crew($)
   expect(s).toContain('Phase: Briefing · "Build a Claude Code mod called "Digital Workplace" that d..."')
   expect(line(s, 'Nova')).toMatch(/briefing|Presenting/i)
-  await w.clock.advance(9000)
+  await w.clock.advance(2000) // fast pacing: the crew pops in, the briefing starts at once
   s = await crew($)
   expect(s).toContain('Phase: Nova is briefing')
   expect(s.split('\n').filter(l => / · Boardroom/.test(l)).length).toBeGreaterThanOrEqual(5)
@@ -108,6 +131,17 @@ test('2. a prompt starts the boardroom briefing', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^Nova is briefing/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('2b. the mission title leaves out system-reminder blocks the app puts before the prompt', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('<system-reminder>\nfoo\n</system-reminder>\nhi'))
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toContain('Phase: Briefing · "hi"')
+  expect(s).toContain('Reception logged a new request: "hi".')
+  expect(s).not.toContain('system-reminder')
 })
 
 test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', async ($, on) => {
@@ -201,7 +235,7 @@ test('5. the end of the turn plays the town hall demo, then the party', async ($
   expect(s.split('\n').filter(l => /Dancing/.test(l)).length).toBeGreaterThanOrEqual(4)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const svg = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
-  expect(svg).toContain('class="fx"') // confetti + disco ride the reduced-motion layer
+  expect(svg).toMatch(/class="[^"]*\bfx\b/) // confetti + disco ride the reduced-motion layer
   await ui.unmount()
 })
 
@@ -305,7 +339,7 @@ test('an aborted tool call never leaves a crew member stuck at work', async ($, 
   expect(s).toContain('Status: ○ Pax (Research) · Glob')
 })
 
-test('plans become cards, assigned to roles by their text', async ($, on) => {
+test('plans become cards, shown as written and unassigned', async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Build the pane'))
@@ -319,14 +353,14 @@ test('plans become cards, assigned to roles by their text', async ($, on) => {
   await $.tool.call({ tool: 'TaskCreate', subject: 'Write the release report', description: 'summary for the user' } as never)
   await w.clock.advance(125)
   const s = await crew($)
-  expect(s).toContain('[done] Read the page script -> research')
-  expect(s).toContain('[working] Style the pane layout -> design')
-  expect(s).toContain('[queued] Implement the hooks module -> build')
-  expect(s).toContain('[queued] Run the tests -> qa')
-  expect(s).toContain('[queued] Review the diff -> review')
-  expect(s).toContain('[queued] Write the release report -> lead')
+  expect(s).toContain('[done] Read the page script -> none')
+  expect(s).toContain('[working] Style the pane layout -> none')
+  expect(s).toContain('[queued] Implement the hooks module -> none')
+  expect(s).toContain('[queued] Run the tests -> none')
+  expect(s).toContain('[queued] Review the diff -> none')
+  expect(s).toContain('[queued] Write the release report -> none')
   await $.tool.call({ tool: 'TaskUpdate', taskId: '7', status: 'completed' } as never)
-  expect(await crew($)).toContain('[done] Write the release report -> lead')
+  expect(await crew($)).toContain('[done] Write the release report -> none')
 })
 
 test('sub-agent launch plays a hand-off duet from Nova', async ($, on) => {
@@ -369,6 +403,15 @@ test('classifier', () => {
   expect(classifyBash('mkdir -p out && cp a b').role).toBe('build')
   expect(classifyBash('git status && git diff').role).toBe('review')
   expect(classifyBash('npm run review').role).toBe('review')
+  expect(classifyBash('ls src; git -C /home/user/board-room log -1').role).toBe('review')
+  expect(classifyBash('git -c core.pager=cat --no-pager diff').role).toBe('review')
+  expect(classifyBash('git -C repo status').role).toBe('research')
+  expect(classifyBash('git -C repo commit -m x').role).toBe('build')
+  // the target is the program that runs, not a variable set before it
+  expect(bashLabel('S="C:/Users/x/AppData/Local/t"; cd "$S" && node run.js --sector 4')).toBe('node run.js --sector 4')
+  expect(bashLabel('$root = "C:/x"; npm test')).toBe('npm test')
+  expect(bashLabel('cd app && npx vitest run')).toBe('npx vitest run')
+  expect(bashLabel('ls -la')).toBe('ls -la')
   expect(routeTool('Edit', { file_path: '/a/b/Pane.tsx' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'design', label: 'Pane.tsx', isCheck: false })
   expect(routeTool('Write', { file_path: '/a/main.go' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'build', label: 'main.go', isCheck: false })
   expect(routeTool('WebFetch', { url: 'https://example.com/x' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'research', label: 'example.com', isCheck: false })
@@ -378,4 +421,163 @@ test('classifier', () => {
   expect(classifyText('Design the pane layout')).toBe('design')
   expect(classifyText('Investigate the hooks API')).toBe('research')
   expect(classifyText('Implement the encoder')).toBe('build')
+})
+
+const usage = (model: string, input: number, output: number) => ({ model, input_tokens: input, output_tokens: output, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0 })
+/** Runs one model request up to its first chunk and returns a function that finishes it. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function stepOpen($: any, w: ReturnType<typeof world>, agentId?: string): Promise<() => Promise<void>> {
+  const it = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 3, ...(agentId ? { agentId } : {}) })[Symbol.asyncIterator]()
+  await it.next()
+  return async () => { w.step.release(); await it.next() }
+}
+
+test('the compute rack powers one machine per run and reports its tokens', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Find the hooks'))
+  await $.turn.start({ text: 'Find the hooks', turnId: 't1' } as never)
+  const done = await stepOpen($, w)
+  await w.clock.advance(1500)
+  let s = await crew($)
+  expect(s).toMatch(/● main · opus 5\.5 · high · 1 req · 0:0[12]/)
+  expect(s).toContain('Compute · ⚡1 on')
+  expect(s).toMatch(/◌ Nova thinking/)
+  await done()
+  const sub = await stepOpen($, w, 'a1')
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(s).toMatch(/  ● Explore · opus 5\.5 · high · 1 req/)
+  expect(s).toContain('Compute · ⚡2 on')
+  await sub()
+  await $.turn.complete({ ...turnDone, agentId: 'a1', usage: usage('claude-opus-5-5', 1200, 300), durationMs: 4000 } as never)
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 15000, 2100), durationMs: 9000 } as never)
+  s = await crew($)
+  expect(s).toContain('○ main · opus 5.5 · high · 24.0k in (9.0k cached) · 2.1k out · 0:09')
+  expect(s).toContain('  ○ Explore · opus 5.5 · high · 10.2k in (9.0k cached) · 300 out · 0:04')
+  expect(s).toContain('Compute · ⚡0 on')
+  expect(s).toMatch(/✓ Done in 0:0\d/)
+})
+
+test('a call that went to the person for approval is marked "asked for your OK"', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Deploy it'))
+  const call = $.tool.call({ tool: 'Bash', command: 'npm run hold-deploy' })
+  await w.clock.advance(125)
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'npm run hold-deploy' } } as never)
+  await w.clock.advance(125)
+  const s = await crew($)
+  expect(s).toMatch(/\? Kit \(Build\) · Bash · npm run hold-deploy · 0:0\d · asked for your OK/)
+  expect(line(s, 'Kit')).toMatch(/asked for your OK/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /asked for your OK/ })).toBeDefined()
+  await ui.unmount()
+  w.hold.release()
+  await call
+  await w.clock.advance(125)
+  const after = await crew($)
+  expect(after).not.toMatch(/\? Kit \(Build\).*asked for your OK/)
+  expect(line(after, 'Kit')).not.toMatch(/asked for your OK/)
+})
+
+test('failures stay in the strip until the same target passes', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fix tests'))
+  await $.tool.call({ tool: 'Bash', command: 'npm test -- fail' })
+  await w.clock.advance(250)
+  expect(await crew($)).toMatch(/✗ Dot \(QA\) · Bash · npm test -- fail failed/)
+  await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
+  await w.clock.advance(250)
+  expect(await crew($)).toMatch(/✗ Dot \(QA\)/) // an unrelated success does not clear it
+  await $.turn.complete(turnDone as never)
+  await w.clock.advance(250)
+  expect(await crew($)).toMatch(/✗ Done in 0:0\d · 1 read, 1 test · 1 failed/)
+})
+
+const ROW = (id: string) => ({ plugin: PLUGIN, component: 'ToolUse', requestId: id, props: { tool_use_id: id, tool: 'Read', input: { file_path: '/a/notes.md' }, isRunning: false, isErrored: false, isInterrupted: false } }) as const
+
+test('tool-row chips are off unless the setting turns them on', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/a/notes.md', tool_use_id: 'req-1' } as never)
+  await w.clock.advance(125)
+  const ui = await $.ui.mount({ ...ROW('req-1'), surface: 'desktop' } as never)
+  expect(await ui.find({ type: 'Text', text: /Pax · Read/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('tool-row chips record each call when enabled', { options: { toolChips: true } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.tool.call({ tool: 'Read', file_path: '/a/notes.md', tool_use_id: 'req-1' } as never)
+  await w.clock.advance(125)
+  const ui = await $.ui.mount({ ...ROW('req-1'), surface: 'desktop' } as never)
+  expect(await ui.find({ type: 'Text', text: /^Pax · Read notes\.md ✓ 0:00$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('in a session with no drawing surface, /workplace says so in one line', async ($, on) => {
+  world(on, true, 'no-surface: no surface is attached ($.session.surfaces() is empty)')
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true } as never)
+  const r = await $.command.run({ command: 'workplace', args: '' } as never)
+  const text = String((r as { text?: unknown }).text)
+  expect(text).toMatch(/No drawing surface in this session/)
+  expect(text.split('\n').length).toBe(1)
+})
+
+test('the desktop pane plays a film and redraws only when something changes', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Read the hooks'))
+  await $.tool.call({ tool: 'Read', file_path: '/a/register.tsx' })
+  await w.clock.advance(1500)
+  // A film that starts right at a camera cut holds one frame, so look at a few redraws.
+  let src = ''
+  for (let i = 0; i < 8 && !src.includes('class="p"'); i++) {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+    expect(src).toContain('.p{animation:none}') // reduced motion: the base frame only
+    expect(src.length).toBeLessThan(131072)
+    await ui.unmount()
+    await w.clock.advance(250)
+  }
+  expect(src).toContain('class="p"') // frames after the first, revealed on time by CSS
+  expect(src).toMatch(/animation-delay:-?\d+\.\d{3}s/)
+  // A quiet second: a terminal would redraw 8 times; here only a new film or new text redraws.
+  const before = w.counts.invalidate
+  await w.clock.advance(1000)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(4)
+})
+
+test('films keep working after a turn reports its usage (event data is frozen)', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Read it'))
+  await $.turn.start({ text: 'Read it', turnId: 't1' } as never)
+  const done = await stepOpen($, w)
+  await done()
+  await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 500, 60) } as never)
+  await w.clock.advance(3000)
+  const s = await crew($)
+  expect(s).not.toContain('Phase: Shipped') // the office has not been pushed into the future
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('<svg')
+  await ui.unmount()
+})
+
+test('a request a settings hook decides never reaches the person, so it is not marked', async ($, on) => {
+  const w = world(on)
+  w.perm.decision = { behavior: 'allow' }
+  await start($)
+  await $.prompt.submit(prompt('Deploy it'))
+  const call = $.tool.call({ tool: 'Bash', command: 'npm run hold-deploy' })
+  await w.clock.advance(125)
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'npm run hold-deploy' } } as never)
+  await w.clock.advance(125)
+  expect(await crew($)).not.toMatch(/asked for your OK/)
+  w.hold.release()
+  await call
 })

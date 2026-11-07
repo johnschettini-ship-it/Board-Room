@@ -4,6 +4,7 @@ function paint(fx) {
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(bgCanvas, 0, 0);
   drawDynamic();
+  drawCompute();
   if (fx && mission && mission.phase === 'party' && !reduceMotion) drawDisco();
   for (const a of agents) a._P = pose(a);
   for (const n of npcs) n._P = npcPose(n);
@@ -39,4 +40,19 @@ function drawLiveLine(x, y) {
   const s = statusLine();
   const txt = mission && (mission.phase === 'huddle' || mission.phase === 'present') ? 'BRIEFING THE CREW' : s.state === 'running' ? fitText(`${s.name}: ${s.tool}`, 21) : s.state === 'finished' ? fitText(`${s.name}: ${s.tool} done`, 21) : 'STANDING BY';
   drawText(ctx, txt, x, y, '#f4b942');
+}
+function drawCompute() {
+  // The IT lab's racks are the compute view: one rack unit per run (main loop
+  // first, then subagents), lit in its model's colour while it runs, dim after.
+  const list = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq)).slice(0, 24);
+  list.forEach((m, i) => {
+    const rx = [124, 160, 196][Math.floor(i / 8)], y = 24 + (i % 8) * 6, X = x => 6 * RW + x, col = modelColor(m.model);
+    rect(ctx, X(rx + 2), y - 1, 28, 5, m.on ? mix(col, '#1f2536', 0.72) : '#1f2536');
+    for (let k = 0; k < 4; k++) {
+      const lit = m.on ? hash(i * 7 + k, Math.floor(visT * 6)) > 0.3 : k === 0;
+      rect(ctx, X(rx + 4 + k * 2), y + 1, 1, 1, lit ? col : mix(col, '#000000', 0.65));
+    }
+    rect(ctx, X(rx + 14), y + 1, 8, 1, m.on ? col : mix(col, '#000000', 0.7));
+    rect(ctx, X(rx + 25), y + 1, 3, 1, m.on ? '#6fdc8c' : '#3a4152');
+  });
 }

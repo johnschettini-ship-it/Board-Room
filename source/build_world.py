@@ -47,7 +47,16 @@ consts = patch(consts, "const reduceMotion = !!(window.matchMedia && window.matc
                "let motion = opts.motion || 'auto', reduceMotion = motion === 'reduced';")
 
 helpers = section('helpers', '3x5 pixel font')
-helpers = patch(helpers, 'const rand = Math.random;', 'const rand = opts.random || Math.random;')
+helpers = patch(helpers, 'const rand = Math.random;',
+                'const rand0 = opts.random || Math.random;\n'
+                '// Draws go through a tape: a look-ahead records them (replaying what an earlier\n'
+                '// look-ahead already drew first), and the live run replays them (see snap.js).\n'
+                'let tapeRec = null, tape = null, tapeI = 0, tapeAhead = null, tapeAheadI = 0;\n'
+                'const rand = () => {\n'
+                '  if (tapeRec) { const v = tapeAhead && tapeAheadI < tapeAhead.length ? tapeAhead[tapeAheadI++] : rand0(); tapeRec.push(v); return v; }\n'
+                '  if (tape) { if (tapeI < tape.length) return tape[tapeI++]; tape = null; }\n'
+                '  return rand0();\n'
+                '};')
 helpers = patch(helpers, "function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.imageSmoothingEnabled = false; return [c, g]; }",
                 'function makeCanvas(w, h) { const c = new Px(w, h); return [c, c]; }')
 
@@ -85,6 +94,7 @@ kept.append(fn(flow_src, 'function besideSpot(b)', 'function startDelivery'))
 kept.append(fn(flow_src, 'function startDelivery(a, d)', 'function deliverTick'))
 dt = fn(flow_src, 'function deliverTick(a)', 'function startDuet')
 dt = patch(dt, "if (!b.duet && b.state !== 'meeting') startDuet(a, b); else a.path = [];", 'if (!b.duet) startDuet(a, b); else a.path = [];')
+dt = patch(dt, 'goTo(a, spot); }', 'popTo(a, spot); }')
 kept.append(dt)
 sd = fn(flow_src, 'function startDuet(a, b)', 'function endDuet')
 sd = patch(sd, "Sound.sfx(kind === 'rework' ? 'bug' : 'duet');", "sfx(kind === 'rework' ? 'bug' : 'duet');")
@@ -145,8 +155,22 @@ body = '\n\n'.join([
     rendering,
     pads,
     cam,
+    part('snap.js'),
     part('api.js'),
 ])
+
+# Every top-level `let` must either be saved by snap.js or be listed here as
+# state a look-ahead never changes; a new one fails the build until decided.
+NOT_SIM = {'motion', 'reduceMotion', 'themeKey', 'bgCanvas', 'lightA', 'tableCanvas', 'chairCanvas', 'frontCanvas', 'hallCanvas',
+           'flickers', 'antennas', 'zoom', 'VWc', 'ctx', 'fxCtx', 'fxOut', 'drag', 'tapeRec', 'tape', 'tapeI', 'tapeAhead', 'tapeAheadI', 'filming', 'version'}
+snap_src = part('snap.js')
+for line in body.split('\n'):
+    if not line.startswith('let '):
+        continue
+    for decl in re.split(r',(?![^(]*\))', line[4:].split(';')[0]):
+        name = decl.split('=')[0].strip()
+        if name and name not in NOT_SIM and not re.search(r'\b' + name + r'\b', snap_src[snap_src.index('function snapshotAll'):]):
+            raise SystemExit(f'snap.js does not save top-level state `{name}`')
 
 for bad in ['document.', 'window.', 'els.', 'Sound.', 'autopilot', 'presetIdx', 'requestAnimationFrame', 'PLAYBOOK', 'GENERIC']:
     hits = [l for l in body.split('\n') if bad in l]

@@ -15,7 +15,8 @@ function directorTick(dt) {
     const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
     const vs = startFor(directorRoom);
     if (r >= vs && r < vs + zoom) return;
-    if (directorDwell > 1.2) want(r);
+    // Crew moves between rooms instantly (door-pop), so a fresh event cuts at once.
+    if (simT - focusT < 1 || directorDwell > 1.2) want(r);
     return;
   }
   if (briefing) { want(BOARD); return; }
