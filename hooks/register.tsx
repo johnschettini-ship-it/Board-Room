@@ -11,7 +11,7 @@ import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
 import { filmSvg, shoot, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
-import type { Card, Frame, Kpis, MachineInfo, Motion, Office, RoleId, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
+import type { Card, ContextInfo, Frame, Kpis, MachineInfo, Motion, Office, RoleId, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -101,8 +101,8 @@ const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : Stri
 function stripLines(st: StripInfo): Line[] {
   const out: Line[] = []
   if (st.receipt) {
-    const clean = st.receipt.startsWith('Done') && !st.failures.length
-    out.push({ key: 'h', text: `${clean ? '✓' : st.receipt.startsWith('Done') ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
+    const finished = /^(Done|Shipped)/.test(st.receipt), clean = finished && !st.failures.length
+    out.push({ key: 'h', text: `${clean ? '✓' : finished ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
   }
   else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
   else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
@@ -110,7 +110,8 @@ function stripLines(st: StripInfo): Line[] {
   else out.push({ key: 'h', text: '○ Crew idle', dim: true })
   // Same shape as the old status line: name (role) · raw tool · target · time.
   for (const r of st.running.slice(0, 4)) {
-    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}`
+    const model = r.model && (r.sub || r.model !== st.mainModel) ? ` · ${r.model}` : ''
+    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}${model}`
     out.push(r.waiting
       ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · asked for your OK`, color: '#f4b942' }
       : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
@@ -144,10 +145,15 @@ function machineLine(m: MachineInfo): Line {
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
   return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
 }
+function contextText(c: ContextInfo): string {
+  if (c.compacting) return ' · context: compacting…'
+  if (c.tokens === null || !c.window) return ''
+  return ` · context ${c.percent}% (${k(c.tokens)} of ${k(c.window)})`
+}
 function computeLines(o: Office): Line[] {
-  const mi = o.machines()
-  if (!mi.list.length) return []
-  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on`, dim: true }, ...mi.list.map(machineLine)]
+  const mi = o.machines(), ctx = contextText(o.context())
+  if (!mi.list.length && !ctx) return []
+  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on${ctx}`, dim: true }, ...mi.list.map(machineLine)]
   if (mi.more) out.push({ key: 'cm', text: `  +${mi.more} more machines`, dim: true })
   return out
 }
@@ -210,11 +216,11 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
 
 // ---- tool calls ----
 /** Starts the crew on a call; true when an activity was opened that must be closed. */
-function before(route: Route, tool: string, input: Record<string, unknown>, id: string): boolean {
+function before(route: Route, tool: string, input: Record<string, unknown>, id: string, agentId?: string): boolean {
   const o = ensureOffice()
   let opened = false
   if (route.kind === 'launch') o.handoff('lead', route.role, 'handoff', route.title)
-  else if (route.kind === 'work') { o.toolStart(id, route.role, tool, route.label); opened = true }
+  else if (route.kind === 'work') { o.toolStart(id, route.role, tool, route.label, { run: agentId ?? 'main', ship: route.isShip === true }); opened = true }
   try { if (planBefore(tool, input)) o.setCards(openCards()) } catch { /* a malformed plan draws no cards */ }
   return opened
 }
@@ -560,6 +566,8 @@ export const register: Register = (on, options) => {
         description: 'Digital Workplace: report what the office crew is doing right now (phase, who works on which tool, duets, plan cards). Read-only.',
         inputSchema: { type: 'object', properties: {} },
       })
+      // The window size (and the fill, if a response already came) for the context tank.
+      try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }) } catch { /* not offered here */ }
       if (!started) {
         started = true
         const ms = Math.round(1000 / frameRate())
@@ -627,7 +635,7 @@ export const register: Register = (on, options) => {
     let opened = false
     try {
       route = routeTool(tool, input, SELF_PREFIX)
-      opened = before(route, tool, input, id)
+      opened = before(route, tool, input, id, (e as { agentId?: string }).agentId)
     } catch { /* never in the way of a tool */ }
     let ok = false
     try {
@@ -677,6 +685,25 @@ export const register: Register = (on, options) => {
       } catch { /* ignore */ }
     }
   })
+
+  // The context window, as the status line has it: pushed after each main turn.
+  on('session.measure', ($, e, next) => {
+    try {
+      const c = (e as { context?: { tokens?: number; window?: number } }).context
+      if (c) ensureOffice().setContext({ tokens: c.tokens, window: c.window })
+    } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Compaction: the boardroom tank drains while the conversation is summarized.
+  on('classic.PreCompact', async ($, e, next) => {
+    try { ensureOffice().compactStart(String((e as { trigger?: unknown }).trigger ?? 'auto')) } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('classic.PostCompact', async ($, e, next) => {
+    try { ensureOffice().compactEnd() } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', ($, e, next) => {
     try {

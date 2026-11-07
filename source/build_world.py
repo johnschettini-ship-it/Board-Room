@@ -132,6 +132,9 @@ rendering = patch(rendering, "  if (isWorking(iris)) { const w = Math.round(36 *
 # in the Studio, IT lab and Lead office go to working cousins.
 rendering = patch(rendering, "    default: {\n      drawText(ctx, title, x0 + 2, y0 + 2, fg);",
                   "    default: {\n      if (m.phase !== 'present') { drawKpis(S); break; }\n      drawText(ctx, title, x0 + 2, y0 + 2, fg);")
+d0 = rendering.index("    case 'done': {")
+d1 = rendering.index("    default: {", d0)
+rendering = rendering[:d0] + "    case 'done': drawKpis(S); break; // the finished turn's KPIs stay up until the next one\n" + rendering[d1:]
 rendering = patch(rendering, "  const pw = isWorking(agentByRole.research);", "  const pw = true; // a cousin researches at this desk now")
 k0 = rendering.index("  const kw = isWorking(agentByRole.build);")
 k1 = rendering.index("  const vw = isWorking(agentByRole.review);", k0)

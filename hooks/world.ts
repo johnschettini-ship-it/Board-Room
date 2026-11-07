@@ -782,7 +782,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     return t.length > 60 ? t.slice(0, 57).trimEnd() + '...' : t;
   }
   function newMission(title) {
-    return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false };
+    return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false, ships: [] };
   }
   function ensureMission() { if (!mission) mission = newMission('Current work'); return mission; }
 
@@ -963,9 +963,11 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
 
   // ---- events from the hooks ----
-  function toolStart(id, role, tool, label) {
+  function toolStart(id, role, tool, label, extra) {
     const a = agentByRole[role] || agentByRole.lead;
-    const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false };
+    // The run that asked for the call (main loop or a subagent) and so its model.
+    const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
+    const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
     acts.set(id, act);
     if (!turnOpen) turnStart();
     // The first real work ends the briefing: the crew goes to its desks.
@@ -986,7 +988,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (a.runCount === 0) a.workUntil = simT + LINGER;
     // A failure stays on the strip until the same work later succeeds or the turn ends.
     if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
-    turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT });
+    turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+    if (act.ship && act.ok) {
+      ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
+      setBubble(a, 'star', 2);
+      log(`${a.name} shipped: ${act.tool}${act.label ? ' ' + act.label : ''}. The town hall gets ready.`, a.role);
+    }
     if (turnCalls.length > 400) turnCalls.shift();
     lastEnded = act; touch(null);
   }
@@ -1032,7 +1039,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const m = ensureMission();
     if (m.phase === 'wrap' || m.phase === 'demo' || m.phase === 'party') return;
     if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
-    setPhase('wrap');
+    // The town hall is for work that left the machine (a commit, a push, a pull
+    // request, a release, a deploy). Any other turn ends at the desks.
+    if (m.ships.length) { setPhase('wrap'); return; }
+    m.finishedAt = simT - m.startT;
+    const worked = new Set(turnCalls.map(c => c.role));
+    for (const a of agents) if (worked.has(a.role) || a.role === 'lead') setBubble(a, 'check', 1.6);
+    log('The turn is done. Nothing shipped, so the crew stays at their desks.', 'lead');
+    announce('Turn done.');
+    sfx('done');
+    setPhase('done');
   }
   function setCards(list) {
     // Plan items are shown verbatim and unassigned: a plan item has no role.
@@ -1063,11 +1079,34 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const share = Math.floor(total / list.length);
     let rest = total - share * list.length;
     for (const r of list) { roleTok[r] += share + (rest > 0 ? 1 : 0); if (rest > 0) rest--; }
+    if (key === 'main' && !ctxInfo.compacting) ctxInfo.tokens = u.input + u.cacheRead + u.cacheCreate;
     const m = machines.get(key);
     if (m) {
       const l = m.live || (m.live = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
       l.input_tokens += u.input; l.cache_read_input_tokens += u.cacheRead; l.cache_creation_input_tokens += u.cacheCreate; l.output_tokens += u.output;
     }
+    touch(null);
+  }
+
+  // ---- context: how full the main loop's window is ----
+  // tokens = the input side of the main loop's last request (uncached, cache
+  // written and cache read), the status line's own measure; window from the
+  // engine's session figures. Compaction empties it until the next response.
+  const ctxInfo = { tokens: null, window: null, compacting: false };
+  function setContext(c) {
+    if (!c) return;
+    if (Number.isFinite(+c.window) && +c.window > 0) ctxInfo.window = Math.round(+c.window);
+    if (Number.isFinite(+c.tokens) && +c.tokens >= 0 && !ctxInfo.compacting) ctxInfo.tokens = Math.round(+c.tokens);
+  }
+  function compactStart(trigger) {
+    ctxInfo.compacting = true;
+    setBubble(agentByRole.lead, 'note', 3);
+    log(`Claude is compacting the conversation (${trigger === 'manual' ? 'asked for' : 'context full'}).`, 'lead');
+    touch(agentByRole.lead);
+  }
+  function compactEnd() {
+    ctxInfo.compacting = false; ctxInfo.tokens = null;
+    log('Compaction done: the conversation was summarized.', 'lead');
     touch(null);
   }
 
@@ -1314,14 +1353,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
         if (td) { const s = fitText(`TOP DUET: ${td.a.name}+${td.b.name}`, 21); drawText(ctx, s, x0 + ((S.w - textW(s)) >> 1), y0 + 23, '#f27fb2'); }
         break;
       }
-      case 'done': {
-        drawText(ctx, title, x0 + 2, y0 + 2, dim);
-        drawText(ctx, 'SHIPPED IN ' + clockShort(m.finishedAt || 0), x0 + 2, y0 + 12, '#78d98e');
-        const msg = 'READY FOR A TASK'; void tIn;
-        drawText(ctx, msg, x0 + 2, y0 + 22, fg);
-        if (Math.floor(visT * 2) % 2) rect(ctx, x0 + 3 + textW(msg) + 1, y0 + 22, 3, 5, fg);
-        break;
-      }
+      case 'done': drawKpis(S); break; // the finished turn's KPIs stay up until the next one
       default: {
         if (m.phase !== 'present') { drawKpis(S); break; }
         drawText(ctx, title, x0 + 2, y0 + 2, fg);
@@ -1583,10 +1615,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
   function drawDesks() {
     const t = visT;
+    drawContextGauge();
     for (const role of ['research', 'build', 'review', 'design', 'qa']) {
       const st = STATIONS[role], sx = st.x - 7, col = ROLES[role].color, a = agentByRole[role];
       rect(ctx, sx, 42, 14, 8, '#0f2236');
       const tok = roleTok[role] || 0, busy = isWorking(a);
+      // The model of the run that asked for the call in progress, as a desk lamp.
+      if (busy && a.act && a.act.model) {
+        const mc = modelColor(a.act.model);
+        rect(ctx, st.x + 7, 55, 3, 3, mix(mc, '#000000', 0.45)); rect(ctx, st.x + 7, 55, 3, 2, mc);
+      }
       if (tok > 0) {
         const s = tokShort(tok);
         drawText(ctx, s, sx + Math.floor((14 - textW(s)) / 2), 43, busy ? col : mix(col, '#0f2236', 0.5));
@@ -1595,6 +1633,25 @@ export function createOffice(opts: OfficeOptions = {}): Office {
         for (let r = 0; r < 4; r++) { const ind = Math.floor(hash(r + off, 1) * 3) * 2; rect(ctx, sx + 1 + ind, 43 + r * 2, 3 + Math.floor(hash(r + off, 2) * (7 - ind)), 1, col); }
       }
     }
+  }
+  /** The boardroom's context tank, right of the KPI screen: the main loop's window, filled. */
+  function drawContextGauge() {
+    const c = ctxInfo, x = BOARD * RW + 171, y = 5;
+    rect(ctx, x, y, 9, 30, '#06080f'); rect(ctx, x + 1, y + 1, 7, 22, '#0d2448');
+    if (c.compacting) {
+      // Being summarized: the tank drains, top to bottom, again and again.
+      const h = 22 - Math.floor((visT * 14) % 22);
+      rect(ctx, x + 1, y + 23 - h, 7, h, '#b08cf5');
+      for (let k = 0; k < 3; k++) rect(ctx, x + 2 + k * 2, y + 23 - h + ((Math.floor(visT * 6) + k) % 3), 1, 1, '#e8dcff');
+      drawText(ctx, '--', x + 1, y + 24, '#b08cf5');
+      return;
+    }
+    if (c.tokens === null || !c.window) { drawText(ctx, '--', x + 1, y + 24, '#5a8ab8'); return; }
+    const f = Math.min(1, c.tokens / c.window), h = Math.max(1, Math.round(22 * f));
+    const col = f < 0.6 ? '#6fdc8c' : f < 0.85 ? '#f4b942' : '#ff6b6b';
+    rect(ctx, x + 1, y + 23 - h, 7, h, col);
+    const pct = String(Math.min(99, Math.round(f * 100)));
+    drawText(ctx, pct, x + 1 + Math.floor((7 - textW(pct)) / 2), y + 24, col);
   }
   function drawKpis(S) {
     const k = kpiInfo(), fg = '#a8e6ff', dim = '#5a8ab8';
@@ -1677,7 +1734,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function snapshotAll() {
     return {
-      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, mission, focus, lastEnded, flickers, antennas]),
+      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, ctxInfo, mission, focus, lastEnded, flickers, antennas]),
       v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
     };
   }
@@ -1750,7 +1807,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (!m) return idleMode() ? 'Idle' : 'Working';
     if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
     const done = m.tasks.filter(t => t.state === 'done').length;
-    return { huddle: 'Briefing', present: 'Nova is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: 'Shipped · ready for a task' }[m.phase];
+    return { huddle: 'Briefing', present: 'Nova is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: m.ships.length ? 'Shipped · ready for a task' : 'Done · ready for a task' }[m.phase];
   }
   function rooms() {
     const vr = viewRoom(), vs = viewStart();
@@ -1777,7 +1834,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function shortModel(model) {
     return String(model || '?').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
   }
-  const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label }; };
+  const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label, model: act.model ? shortModel(act.model) : '', modelColor: act.model ? modelColor(act.model) : '', sub: !!act.run && act.run !== 'main' }; };
   function receiptText() {
     if (turnEndT === null) return null;
     const c = { read: 0, edit: 0, test: 0, command: 0, other: 0 };
@@ -1790,7 +1847,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     }
     const parts = Object.entries(c).filter(([, v]) => v).map(([k, v]) => `${v} ${k}${v === 1 ? '' : 's'}`);
     const failed = turnCalls.filter(x => !x.ok).length, fixed = turnCalls.filter(x => !x.ok && x.fixed).length;
-    const head = turnReason === 'answer' ? 'Done' : turnReason === 'aborted' ? 'Stopped' : 'Ended with an error';
+    const head = turnReason === 'answer' ? (mission && mission.ships.length ? 'Shipped' : 'Done') : turnReason === 'aborted' ? 'Stopped' : 'Ended with an error';
     return `${head} in ${fmt(turnEndT - turnT0)} · ${parts.length ? parts.join(', ') : 'no tools'}${failed ? ` · ${failed} failed${fixed ? `, ${fixed} fixed` : ''}` : ''}`;
   }
   function stripInfo() {
@@ -1802,6 +1859,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       thinking: isThinking() ? simT - (thinkT0 ?? simT) : null,
       turnSeconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0,
       running, failures, recent, receipt: turnOpen ? null : receiptText(),
+      mainModel: machines.get('main') ? shortModel(machines.get('main').model) : '', shipped: mission ? mission.ships.length : 0,
     };
   }
   function machinesInfo() {
@@ -1822,6 +1880,10 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
     };
   }
+  function contextInfo() {
+    const c = ctxInfo;
+    return { tokens: c.tokens, window: c.window, percent: c.tokens !== null && c.window ? Math.min(100, Math.round(c.tokens / c.window * 100)) : null, compacting: c.compacting };
+  }
   function toolRole(id) {
     const x = acts.get(id) || turnCalls.find(c => c.id === id);
     return x ? { ...who(x), ok: x.ok == null ? null : x.ok, seconds: (x.endT ?? simT) - x.startT } : null;
@@ -1836,7 +1898,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
       particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
       status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
-      strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok },
+      strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
     };
   }
 
@@ -1859,7 +1921,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
     startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-    turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+    turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo,
+    setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },
   };

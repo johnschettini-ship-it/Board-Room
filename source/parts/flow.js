@@ -33,7 +33,7 @@ function cleanTitle(text) {
   return t.length > 60 ? t.slice(0, 57).trimEnd() + '...' : t;
 }
 function newMission(title) {
-  return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false };
+  return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false, ships: [] };
 }
 function ensureMission() { if (!mission) mission = newMission('Current work'); return mission; }
 
@@ -214,9 +214,11 @@ function updateAgent(a, dt) {
 }
 
 // ---- events from the hooks ----
-function toolStart(id, role, tool, label) {
+function toolStart(id, role, tool, label, extra) {
   const a = agentByRole[role] || agentByRole.lead;
-  const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false };
+  // The run that asked for the call (main loop or a subagent) and so its model.
+  const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
+  const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
   acts.set(id, act);
   if (!turnOpen) turnStart();
   // The first real work ends the briefing: the crew goes to its desks.
@@ -237,7 +239,12 @@ function toolEnd(id, ok) {
   if (a.runCount === 0) a.workUntil = simT + LINGER;
   // A failure stays on the strip until the same work later succeeds or the turn ends.
   if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
-  turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT });
+  turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+  if (act.ship && act.ok) {
+    ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
+    setBubble(a, 'star', 2);
+    log(`${a.name} shipped: ${act.tool}${act.label ? ' ' + act.label : ''}. The town hall gets ready.`, a.role);
+  }
   if (turnCalls.length > 400) turnCalls.shift();
   lastEnded = act; touch(null);
 }
@@ -283,7 +290,16 @@ function turnEnd(reason) {
   const m = ensureMission();
   if (m.phase === 'wrap' || m.phase === 'demo' || m.phase === 'party') return;
   if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
-  setPhase('wrap');
+  // The town hall is for work that left the machine (a commit, a push, a pull
+  // request, a release, a deploy). Any other turn ends at the desks.
+  if (m.ships.length) { setPhase('wrap'); return; }
+  m.finishedAt = simT - m.startT;
+  const worked = new Set(turnCalls.map(c => c.role));
+  for (const a of agents) if (worked.has(a.role) || a.role === 'lead') setBubble(a, 'check', 1.6);
+  log('The turn is done. Nothing shipped, so the crew stays at their desks.', 'lead');
+  announce('Turn done.');
+  sfx('done');
+  setPhase('done');
 }
 function setCards(list) {
   // Plan items are shown verbatim and unassigned: a plan item has no role.
@@ -314,11 +330,34 @@ function stepDone(key, usage, roles) {
   const share = Math.floor(total / list.length);
   let rest = total - share * list.length;
   for (const r of list) { roleTok[r] += share + (rest > 0 ? 1 : 0); if (rest > 0) rest--; }
+  if (key === 'main' && !ctxInfo.compacting) ctxInfo.tokens = u.input + u.cacheRead + u.cacheCreate;
   const m = machines.get(key);
   if (m) {
     const l = m.live || (m.live = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
     l.input_tokens += u.input; l.cache_read_input_tokens += u.cacheRead; l.cache_creation_input_tokens += u.cacheCreate; l.output_tokens += u.output;
   }
+  touch(null);
+}
+
+// ---- context: how full the main loop's window is ----
+// tokens = the input side of the main loop's last request (uncached, cache
+// written and cache read), the status line's own measure; window from the
+// engine's session figures. Compaction empties it until the next response.
+const ctxInfo = { tokens: null, window: null, compacting: false };
+function setContext(c) {
+  if (!c) return;
+  if (Number.isFinite(+c.window) && +c.window > 0) ctxInfo.window = Math.round(+c.window);
+  if (Number.isFinite(+c.tokens) && +c.tokens >= 0 && !ctxInfo.compacting) ctxInfo.tokens = Math.round(+c.tokens);
+}
+function compactStart(trigger) {
+  ctxInfo.compacting = true;
+  setBubble(agentByRole.lead, 'note', 3);
+  log(`Claude is compacting the conversation (${trigger === 'manual' ? 'asked for' : 'context full'}).`, 'lead');
+  touch(agentByRole.lead);
+}
+function compactEnd() {
+  ctxInfo.compacting = false; ctxInfo.tokens = null;
+  log('Compaction done: the conversation was summarized.', 'lead');
   touch(null);
 }
 

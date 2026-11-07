@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bashLabel, classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
+import { bashLabel, classifyBash, classifyText, isShipCommand, routeTool } from '../hooks/classify.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -33,6 +33,8 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('classic.PreCompact', () => ({}))
+  on('classic.PostCompact', () => ({}))
   on('ui.status', () => ({ value: undefined }))
   if (surfaces) on('session.surfaces', () => ({ value: surfaces as never }))
   on('classic.PermissionRequest', () => (perm.decision ? { decision: perm.decision } : {}) as never)
@@ -212,13 +214,15 @@ test('4. a failing test shows the bug bubble and the Dot-to-Kit duet', async ($,
   expect(line(s, 'Kit')).toMatch(/Receiving from Dot/)
 })
 
-test('5. the end of the turn plays the town hall demo, then the party', async ($, on) => {
+test('5. a turn that ships (here a git commit) ends with the town hall demo, then the party', async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Ship it'))
   await w.clock.advance(1000)
   await $.tool.call({ tool: 'Edit', file_path: '/work/a.ts', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Bash', command: 'git -C /work commit -am "Ship it"' })
   await w.clock.advance(1000)
+  expect(await crew($)).toMatch(/Kit shipped: Bash git commit -am/)
   await $.turn.complete(turnDone as never)
   // The briefing that the prompt started finishes first, then the crew heads out.
   let s = ''
@@ -412,6 +416,10 @@ test('classifier', () => {
   expect(bashLabel('$root = "C:/x"; npm test')).toBe('npm test')
   expect(bashLabel('cd app && npx vitest run')).toBe('npx vitest run')
   expect(bashLabel('ls -la')).toBe('ls -la')
+  // shipping: work that leaves the machine
+  for (const c of ['git commit -m x', 'git -C repo push -u origin main', 'gh pr create --fill', 'gh pr merge 3', 'gh api -X PUT repos/o/r/pulls/3/merge', 'npm publish', 'npm run deploy', 'wrangler deploy', 'cd app && git push']) expect(isShipCommand(c)).toBe(true)
+  for (const c of ['git status', 'git diff', 'git log', 'gh pr view 3', 'npm test', 'git commitish', 'echo git push']) expect(isShipCommand(c)).toBe(false)
+  expect(routeTool('mcp__github__create_pull_request', {}, 'mcp__digital-workplace__')).toMatchObject({ kind: 'work', isShip: true })
   expect(routeTool('Edit', { file_path: '/a/b/Pane.tsx' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'design', label: 'Pane.tsx', isCheck: false })
   expect(routeTool('Write', { file_path: '/a/main.go' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'build', label: 'main.go', isCheck: false })
   expect(routeTool('WebFetch', { url: 'https://example.com/x' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'research', label: 'example.com', isCheck: false })
@@ -545,10 +553,10 @@ test('the desktop pane plays a film and redraws only when something changes', as
   }
   expect(src).toContain('class="p"') // frames after the first, revealed on time by CSS
   expect(src).toMatch(/animation-delay:-?\d+\.\d{3}s/)
-  // A quiet second: a terminal would redraw 8 times; here only a new film or new text redraws.
+  // Two quieter seconds: a terminal would redraw 16 times; here only a new film or new text redraws.
   const before = w.counts.invalidate
-  await w.clock.advance(1000)
-  expect(w.counts.invalidate - before).toBeLessThanOrEqual(4)
+  await w.clock.advance(2000)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(8)
 })
 
 test('films keep working after a turn reports its usage (event data is frozen)', async ($, on) => {
@@ -562,7 +570,8 @@ test('films keep working after a turn reports its usage (event data is frozen)',
   await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 500, 60) } as never)
   await w.clock.advance(3000)
   const s = await crew($)
-  expect(s).not.toContain('Phase: Shipped') // the office has not been pushed into the future
+  expect(s).toContain('Phase: Done · ready for a task') // a turn without a ship ends at the desks
+  expect(s).not.toMatch(/Recent:[\s\S]*\d{2,}\.\ds ago/) // and nothing was pushed tens of seconds into the future
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('<svg')
   await ui.unmount()
@@ -607,4 +616,60 @@ test('each model request adds its tokens to the KPIs and to the crew whose tools
   await $.turn.complete(turnDone as never)
   await $.turn.start({ text: 'Again', turnId: 't2' } as never)
   expect(await crew($)).not.toMatch(/\d tokens/)
+})
+
+test('a turn that ships nothing ends at the desks: no town hall', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Look around'))
+  await $.tool.call({ tool: 'Read', file_path: '/work/a.ts' })
+  await $.tool.call({ tool: 'Bash', command: 'git push --dry-run -- fail' }) // a failed push ships nothing
+  await w.clock.advance(500)
+  await $.turn.complete(turnDone as never)
+  await w.clock.advance(3000)
+  const s = await crew($)
+  expect(s).toContain('Nothing shipped, so the crew stays at their desks')
+  expect(s).not.toMatch(/Phase: (Off to the town hall|Live demo|Shipped)/)
+  expect(s.split('\n').filter(l => / · Town hall/.test(l)).length).toBe(0)
+  expect(s).toMatch(/✗ Done in 0:0\d/)
+})
+
+test('a call from a subagent on another model shows that model in the strip', async ($, on) => {
+  let release: () => void = () => {}
+  on('tool.call', { tool: 'Grep' }, () => new Promise(r => { release = () => r({ result: { matches: 0 } }) }))
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Explore'))
+  await $.turn.start({ text: 'Explore', turnId: 't1' } as never)
+  const main = await stepOpen($, w)
+  await main()
+  const it = $.turn.step({ turnId: 't1', index: 0, model: 'claude-haiku-5-5', messageCount: 2, agentId: 'a1' })[Symbol.asyncIterator]()
+  await it.next()
+  const pending = $.tool.call({ tool: 'Grep', pattern: 'register', agentId: 'a1' } as never)
+  const mainCall = $.tool.call({ tool: 'Bash', command: 'npm run hold-x' })
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toMatch(/● Pax \(Research\) · Grep · register · haiku 5\.5 · 0:00/)
+  expect(s).toMatch(/● Kit \(Build\) · Bash · npm run hold-x · 0:00/) // the main loop's own model is left out
+  release(); w.hold.release(); w.step.release()
+  await pending; await mainCall; await it.next()
+})
+
+test('the boardroom context tank follows the main loop and drains during compaction', async ($, on) => {
+  const w = world(on)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never }))
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.turn.start({ text: 'Work', turnId: 't1' } as never)
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 2000, cache_read_input_tokens: 100000, cache_creation_input_tokens: 2000, output_tokens: 500 }
+  await (await stepOpen($, w))()
+  expect(await crew($)).toContain('context 52% (104.0k of 200.0k)')
+  await $.classic.PreCompact({ trigger: 'auto', custom_instructions: null } as never)
+  let s = await crew($)
+  expect(s).toContain('context: compacting')
+  expect(s).toContain('Claude is compacting the conversation (context full)')
+  await $.classic.PostCompact({ trigger: 'auto', compact_summary: 'x' } as never)
+  s = await crew($)
+  expect(s).not.toContain('compacting…')
+  expect(s).not.toMatch(/context \d+%/) // unknown until the next response
 })

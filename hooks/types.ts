@@ -47,7 +47,8 @@ export type StatusLine =
 
 export type Card = { id: string; title: string; role: RoleId; status: 'pending' | 'in_progress' | 'completed' }
 
-export type Who = { name: string; role: string; color: string; tool: string; label: string }
+/** A call's crew member, tool and target, and the model of the run that asked for it ('' when unknown). */
+export type Who = { name: string; role: string; color: string; tool: string; label: string; model: string; modelColor: string; sub: boolean }
 export type StripInfo = {
   open: boolean
   thinking: number | null
@@ -56,7 +57,12 @@ export type StripInfo = {
   failures: (Who & { id: string })[]
   recent: (Who & { id: string; ok: boolean; seconds: number })[]
   receipt: string | null
+  /** The main loop's model, short ('' before its first request). */
+  mainModel: string
+  /** Successful ship calls this turn (commit, push, pull request, release, deploy). */
+  shipped: number
 }
+export type ContextInfo = { tokens: number | null; window: number | null; percent: number | null; compacting: boolean }
 export type Kpis = {
   tokensIn: number
   tokensOut: number
@@ -121,6 +127,8 @@ export type Snapshot = {
   machines: MachinesInfo
   kpis: Kpis
   tokens: Record<RoleId, number>
+  context: ContextInfo
+  ships: string[]
 }
 
 export interface Office {
@@ -154,7 +162,7 @@ export interface Office {
   snapshot(): Snapshot
   crewSprite(id: string): Px
   startMission(text: string): void
-  toolStart(id: string, role: RoleId, tool: string, label?: string): unknown
+  toolStart(id: string, role: RoleId, tool: string, label?: string, extra?: { run?: string; ship?: boolean }): unknown
   toolEnd(id: string, ok: boolean): void
   handoff(from: RoleId, to: RoleId, kind: 'handoff' | 'rework', title?: string): void
   bug(from?: RoleId, to?: RoleId, title?: string): void
@@ -169,6 +177,11 @@ export interface Office {
   /** One model request finished: add its usage, split across the crew whose tools it asked for. */
   stepDone(key: string, usage: Partial<Usage> | null | undefined, roles: RoleId[]): void
   kpis(): Kpis
+  /** The main loop's context window: figures from the engine (window, and tokens when known). */
+  setContext(c: { tokens?: number; window?: number }): void
+  compactStart(trigger?: string): void
+  compactEnd(): void
+  context(): ContextInfo
   strip(): StripInfo
   machines(): MachinesInfo
   toolRole(id: string): (Who & { ok: boolean | null; seconds: number }) | null

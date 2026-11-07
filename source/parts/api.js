@@ -23,7 +23,7 @@ function phaseText() {
   if (!m) return idleMode() ? 'Idle' : 'Working';
   if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
   const done = m.tasks.filter(t => t.state === 'done').length;
-  return { huddle: 'Briefing', present: 'Nova is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: 'Shipped · ready for a task' }[m.phase];
+  return { huddle: 'Briefing', present: 'Nova is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: m.ships.length ? 'Shipped · ready for a task' : 'Done · ready for a task' }[m.phase];
 }
 function rooms() {
   const vr = viewRoom(), vs = viewStart();
@@ -50,7 +50,7 @@ const fmt = s => { const t = Math.max(0, Math.floor(s)); return `${Math.floor(t 
 function shortModel(model) {
   return String(model || '?').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
 }
-const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label }; };
+const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label, model: act.model ? shortModel(act.model) : '', modelColor: act.model ? modelColor(act.model) : '', sub: !!act.run && act.run !== 'main' }; };
 function receiptText() {
   if (turnEndT === null) return null;
   const c = { read: 0, edit: 0, test: 0, command: 0, other: 0 };
@@ -63,7 +63,7 @@ function receiptText() {
   }
   const parts = Object.entries(c).filter(([, v]) => v).map(([k, v]) => `${v} ${k}${v === 1 ? '' : 's'}`);
   const failed = turnCalls.filter(x => !x.ok).length, fixed = turnCalls.filter(x => !x.ok && x.fixed).length;
-  const head = turnReason === 'answer' ? 'Done' : turnReason === 'aborted' ? 'Stopped' : 'Ended with an error';
+  const head = turnReason === 'answer' ? (mission && mission.ships.length ? 'Shipped' : 'Done') : turnReason === 'aborted' ? 'Stopped' : 'Ended with an error';
   return `${head} in ${fmt(turnEndT - turnT0)} · ${parts.length ? parts.join(', ') : 'no tools'}${failed ? ` · ${failed} failed${fixed ? `, ${fixed} fixed` : ''}` : ''}`;
 }
 function stripInfo() {
@@ -75,6 +75,7 @@ function stripInfo() {
     thinking: isThinking() ? simT - (thinkT0 ?? simT) : null,
     turnSeconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0,
     running, failures, recent, receipt: turnOpen ? null : receiptText(),
+    mainModel: machines.get('main') ? shortModel(machines.get('main').model) : '', shipped: mission ? mission.ships.length : 0,
   };
 }
 function machinesInfo() {
@@ -95,6 +96,10 @@ function kpiInfo() {
     seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
   };
 }
+function contextInfo() {
+  const c = ctxInfo;
+  return { tokens: c.tokens, window: c.window, percent: c.tokens !== null && c.window ? Math.min(100, Math.round(c.tokens / c.window * 100)) : null, compacting: c.compacting };
+}
 function toolRole(id) {
   const x = acts.get(id) || turnCalls.find(c => c.id === id);
   return x ? { ...who(x), ok: x.ok == null ? null : x.ok, seconds: (x.endT ?? simT) - x.startT } : null;
@@ -109,7 +114,7 @@ function snapshot() {
     view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
     particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
     status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
-    strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok },
+    strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
   };
 }
 
@@ -132,7 +137,8 @@ return {
   setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
   startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-  turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+  turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo,
+  setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
   strip: stripInfo, machines: machinesInfo, toolRole,
   get simT() { return simT; },
 };

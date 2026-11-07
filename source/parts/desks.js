@@ -7,10 +7,16 @@
 const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
 function drawDesks() {
   const t = visT;
+  drawContextGauge();
   for (const role of ['research', 'build', 'review', 'design', 'qa']) {
     const st = STATIONS[role], sx = st.x - 7, col = ROLES[role].color, a = agentByRole[role];
     rect(ctx, sx, 42, 14, 8, '#0f2236');
     const tok = roleTok[role] || 0, busy = isWorking(a);
+    // The model of the run that asked for the call in progress, as a desk lamp.
+    if (busy && a.act && a.act.model) {
+      const mc = modelColor(a.act.model);
+      rect(ctx, st.x + 7, 55, 3, 3, mix(mc, '#000000', 0.45)); rect(ctx, st.x + 7, 55, 3, 2, mc);
+    }
     if (tok > 0) {
       const s = tokShort(tok);
       drawText(ctx, s, sx + Math.floor((14 - textW(s)) / 2), 43, busy ? col : mix(col, '#0f2236', 0.5));
@@ -19,6 +25,25 @@ function drawDesks() {
       for (let r = 0; r < 4; r++) { const ind = Math.floor(hash(r + off, 1) * 3) * 2; rect(ctx, sx + 1 + ind, 43 + r * 2, 3 + Math.floor(hash(r + off, 2) * (7 - ind)), 1, col); }
     }
   }
+}
+/** The boardroom's context tank, right of the KPI screen: the main loop's window, filled. */
+function drawContextGauge() {
+  const c = ctxInfo, x = BOARD * RW + 171, y = 5;
+  rect(ctx, x, y, 9, 30, '#06080f'); rect(ctx, x + 1, y + 1, 7, 22, '#0d2448');
+  if (c.compacting) {
+    // Being summarized: the tank drains, top to bottom, again and again.
+    const h = 22 - Math.floor((visT * 14) % 22);
+    rect(ctx, x + 1, y + 23 - h, 7, h, '#b08cf5');
+    for (let k = 0; k < 3; k++) rect(ctx, x + 2 + k * 2, y + 23 - h + ((Math.floor(visT * 6) + k) % 3), 1, 1, '#e8dcff');
+    drawText(ctx, '--', x + 1, y + 24, '#b08cf5');
+    return;
+  }
+  if (c.tokens === null || !c.window) { drawText(ctx, '--', x + 1, y + 24, '#5a8ab8'); return; }
+  const f = Math.min(1, c.tokens / c.window), h = Math.max(1, Math.round(22 * f));
+  const col = f < 0.6 ? '#6fdc8c' : f < 0.85 ? '#f4b942' : '#ff6b6b';
+  rect(ctx, x + 1, y + 23 - h, 7, h, col);
+  const pct = String(Math.min(99, Math.round(f * 100)));
+  drawText(ctx, pct, x + 1 + Math.floor((7 - textW(pct)) / 2), y + 24, col);
 }
 function drawKpis(S) {
   const k = kpiInfo(), fg = '#a8e6ff', dim = '#5a8ab8';
