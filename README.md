@@ -49,6 +49,8 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 The status line under the room view shows the role at work, the tool and the elapsed time.
 
+In the Claude desktop app the office is full pixel art. In a terminal it is pixel art where the terminal shows pictures and coloured blocks elsewhere. A terminal cannot read the system's reduced-motion setting, so set `motion` to `reduced` there if you want it.
+
 ## Settings
 
 | Setting | Default | Meaning |
@@ -57,6 +59,7 @@ The status line under the room view shows the role at work, the tool and the ela
 | `motion` | auto | `auto` hides confetti and disco when the system asks for reduced motion. `reduced` always calms the office. `full` always shows everything. |
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | Redraws per second, 2 to 10. |
+| `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured half blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 
 ## How it works
 

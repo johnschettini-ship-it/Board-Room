@@ -10,7 +10,7 @@ import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
 import { classifyText, routeTool, type Route } from './classify.ts'
-import type { Card, Motion, Office, Sfx, StatusLine, ThemeId } from './types.ts'
+import type { Card, Frame, Motion, Office, Sfx, StatusLine, ThemeId } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -19,12 +19,14 @@ const SELF_PREFIX = `mcp__${PLUGIN}__`
 const SVG_LIMIT = 131072
 
 type Engine = EngineInterface
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number }
+type TerminalArt = 'auto' | 'blocks' | 'image'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt }
+type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8 }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -43,6 +45,13 @@ const sprites = new Map<string, string>()
 let cache: Encoded = { no: -1, zoom: 0, svg: '', png: '', width: 240, height: 176, sizes: [0, 0] }
 let lastPixels: Uint32Array | null = null
 let lastHadFx = false
+let rendered: { no: number; zoom: number; frame: Frame } | null = null
+let termPng = { no: -1, zoom: 0, png: '' }
+let cellCache: Cells = { no: -1, zoom: 0, columns: 0, rows: 0, cells: '' }
+let cellBuf = new Uint32Array(0)
+let composed = new Uint8ClampedArray(0)
+/** What this terminal can draw: pictures (kitty, Ghostty), pictures in fullscreen (iTerm2), or blocks. */
+let termArt: 'image' | 'iterm' | 'blocks' = 'blocks'
 
 function themeFor(t: Options['theme']): ThemeId {
   if (t !== 'auto') return t
@@ -138,9 +147,75 @@ function after(route: Route, tool: string, input: Record<string, unknown>, ran: 
 }
 
 // ---- drawing ----
+/** One paint per frame, shared by every surface that draws it. */
+function renderFrame(o: Office): Frame {
+  if (rendered && rendered.no === frameNo && rendered.zoom === o.zoom) return rendered.frame
+  const frame = o.render()
+  rendered = { no: frameNo, zoom: o.zoom, frame }
+  return frame
+}
+
+/** The frame with its motion layer laid over it, for terminals (no media queries there). */
+function composite(f: Frame): Uint8ClampedArray {
+  if (!f.fx || opts.motion === 'reduced') return f.base.data
+  if (composed.length !== f.base.data.length) composed = new Uint8ClampedArray(f.base.data.length)
+  const b = new Uint32Array(f.base.data.buffer), x = new Uint32Array(f.fx.data.buffer), o = new Uint32Array(composed.buffer)
+  for (let i = 0; i < o.length; i++) o[i] = x[i]! >>> 24 ? x[i]! : b[i]!
+  return composed
+}
+
+/** PNG for terminals that show pictures (kitty, Ghostty, iTerm2). */
+function terminalPng(o: Office): string {
+  if (termPng.no === frameNo && termPng.zoom === o.zoom && termPng.png) return termPng.png
+  const f = renderFrame(o)
+  const png = f.fx ? base64(encodePNG(composite(f), f.width, f.height, false)) : encodeFrame(o).png
+  termPng = { no: frameNo, zoom: o.zoom, png }
+  return png
+}
+
+/**
+ * The office in coloured half blocks for every other terminal: each cell is
+ * '▀' with the upper pixel as its foreground and the lower as its background,
+ * each pixel the average of the frame area it covers.
+ */
+function blockCells(o: Office, columns: number): Cells {
+  const f = renderFrame(o)
+  const rows = Math.max(4, Math.min(256, Math.round((columns * f.height) / f.width / 2)))
+  if (cellCache.no === frameNo && cellCache.zoom === o.zoom && cellCache.columns === columns && cellCache.rows === rows) return cellCache
+  const W = f.width, H = f.height, src = composite(f), V = rows * 2, n = columns * rows * 3
+  if (cellBuf.length !== n) cellBuf = new Uint32Array(n)
+  for (let ty = 0; ty < V; ty++) {
+    const y0 = Math.floor((ty * H) / V), y1 = Math.max(y0 + 1, Math.floor(((ty + 1) * H) / V))
+    for (let tx = 0; tx < columns; tx++) {
+      const x0 = Math.floor((tx * W) / columns), x1 = Math.max(x0 + 1, Math.floor(((tx + 1) * W) / columns))
+      let r = 0, g = 0, b = 0, c = 0
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0, i = (y * W + x0) * 4; x < x1; x++, i += 4) { r += src[i]!; g += src[i + 1]!; b += src[i + 2]!; c++ }
+      }
+      const rgb = ((Math.round(r / c) << 16) | (Math.round(g / c) << 8) | Math.round(b / c)) >>> 0
+      const cell = ((ty >> 1) * columns + tx) * 3
+      if (ty & 1) cellBuf[cell + 2] = rgb
+      else { cellBuf[cell] = 0x2580; cellBuf[cell + 1] = rgb }
+    }
+  }
+  cellCache = { no: frameNo, zoom: o.zoom, columns, rows, cells: base64(new Uint8Array(cellBuf.buffer, 0, n * 4)) }
+  return cellCache
+}
+
+async function detectTerminal($: Engine): Promise<void> {
+  if (opts.terminalArt !== 'auto') { termArt = opts.terminalArt; return }
+  const [term, program, kitty, tmux, lcTerminal] = await Promise.all([
+    $.env.get('TERM'), $.env.get('TERM_PROGRAM'), $.env.get('KITTY_WINDOW_ID'), $.env.get('TMUX'), $.env.get('LC_TERMINAL'),
+  ])
+  if (tmux) termArt = 'blocks' // pictures need tmux passthrough, which is off by default
+  else if (kitty || /kitty|ghostty/i.test(term ?? '') || /ghostty/i.test(program ?? '')) termArt = 'image'
+  else if (/iterm/i.test(program ?? '') || /iterm/i.test(lcTerminal ?? '')) termArt = 'iterm'
+  else termArt = 'blocks'
+}
+
 function encodeFrame(o: Office): Encoded {
   if (cache.no === frameNo && cache.zoom === o.zoom && cache.svg) return cache
-  const f = o.render()
+  const f = renderFrame(o)
   // A quiet room repeats frames: skip the encode when no pixel changed.
   const px = f.base.u32
   if (cache.svg && !f.fx && !lastHadFx && lastPixels && lastPixels.length === px.length && cache.width === f.width) {
@@ -240,11 +315,13 @@ export const register: Register = (on, options) => {
     motion: options.motion === 'reduced' || options.motion === 'full' ? options.motion : 'auto',
     theme: options.theme === 'night' || options.theme === 'sunset' || options.theme === 'day' ? options.theme : 'auto',
     frameRate: typeof options.frameRate === 'number' ? options.frameRate : 8,
+    terminalArt: options.terminalArt === 'blocks' || options.terminalArt === 'image' ? options.terminalArt : 'auto',
   }
 
   on('session.start', async ($, e, next) => {
     try {
       ensureOffice()
+      try { await detectTerminal($) } catch { termArt = 'blocks' }
       await $.command.register({ name: 'workplace', description: 'Show or hide the Digital Workplace pane (show, hide, status)', argumentHint: '[show|hide|status]', immediate: true })
       await $.tool.register({
         name: 'crew_status',
@@ -335,7 +412,6 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const o = ensureOffice()
-    const f = encodeFrame(o)
     const t = o.ticker()
     const s = o.statusLine()
     const rooms = o.rooms()
@@ -348,12 +424,21 @@ export const register: Register = (on, options) => {
     const statusColor = s.state === 'idle' ? undefined : s.color
 
     if (e.surface === 'terminal') {
-      const { Box, Text, Button, Image } = $.ui.resolve(e)
-      const columns = Math.max(20, Math.min(255, e.props.bodyColumns))
-      const rows = Math.max(6, Math.min(255, Math.round((columns * f.height) / f.width / 2)))
+      const { Box, Text, Button, Image, Raster } = $.ui.resolve(e)
+      const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
+      let view
+      if (pictures) {
+        const f = renderFrame(o)
+        const columns = Math.max(20, Math.min(255, e.props.bodyColumns))
+        const rows = Math.max(6, Math.min(255, Math.round((columns * f.height) / f.width / 2)))
+        view = <Image key="view" source={{ png: terminalPng(o) }} columns={columns} rows={rows} alt={alt} />
+      } else {
+        const c = blockCells(o, Math.max(20, Math.min(512, e.props.bodyColumns)))
+        view = <Raster key="view" columns={c.columns} rows={c.rows} cells={c.cells} />
+      }
       return (
         <Box flexDirection="column">
-          <Image key="view" source={{ png: f.png }} columns={columns} rows={rows} alt={alt} />
+          {view}
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
             {rooms.map(r => (
@@ -385,6 +470,7 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
+    const f = encodeFrame(o)
     return (
       <Box flexDirection="column" gap={1}>
         <Svg source={f.svg} alt={alt} />

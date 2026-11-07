@@ -60,8 +60,13 @@ test('1. the pane opens at start and shows the office within 2 s, on every surfa
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     if (surface === 'terminal') {
-      const img = await ui.find({ type: 'Image' })
-      expect(img).toBeDefined()
+      // no picture support named in the environment: coloured half blocks
+      const raster = await ui.find({ type: 'Raster', key: 'view' })
+      expect(raster?.props.columns).toBe(60)
+      expect(raster?.props.rows).toBe(22)
+      const bytes = Uint8Array.from(atob(String(raster?.props.cells)), ch => ch.charCodeAt(0))
+      expect(bytes.length).toBe(60 * 22 * 12)
+      expect(new DataView(bytes.buffer).getUint32(0, true)).toBe(0x2580)
     } else {
       const svg = await ui.find({ type: 'Svg' })
       const src = String(svg?.props.source ?? '')
@@ -235,6 +240,26 @@ test('6. hide and show work, and nothing breaks while the pane is closed', async
   const n = w.counts.invalidate
   await w.clock.advance(1000)
   expect(w.counts.invalidate).toBe(n)
+})
+
+test('terminals that show pictures get the pixel art as an image', async ($, on) => {
+  mock.env(on, { TERM: 'xterm-kitty', KITTY_WINDOW_ID: '1' })
+  world(on)
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const img = await ui.find({ type: 'Image', key: 'view' })
+  expect(String((img?.props.source as { png?: unknown })?.png ?? '').length).toBeGreaterThan(1000)
+  expect(await ui.find({ type: 'Raster' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Windows Terminal gets coloured blocks; the setting can force pictures', { options: { terminalArt: 'image' } }, async ($, on) => {
+  mock.env(on, { WT_SESSION: 'abc', TERM_PROGRAM: '' })
+  world(on)
+  await start($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Image', key: 'view' })).toBeDefined()
+  await ui.unmount()
 })
 
 test('openOnStart false keeps the pane closed until /workplace', { options: { openOnStart: false } }, async ($, on) => {

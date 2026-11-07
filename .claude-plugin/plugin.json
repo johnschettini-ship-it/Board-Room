@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -51,6 +51,17 @@
       "title": "Frames per second",
       "description": "How often the pane redraws, 2 to 10. Lower uses less bandwidth.",
       "default": 8
+    },
+    "terminalArt": {
+      "type": "string",
+      "title": "Office art in a terminal",
+      "description": "auto shows pictures in kitty, Ghostty and iTerm2 and coloured blocks elsewhere (Windows Terminal, VS Code, tmux). blocks or image forces one.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "blocks",
+        "image"
+      ]
     }
   }
 }
