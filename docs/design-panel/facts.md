@@ -57,6 +57,14 @@
 - Classifier gap seen in the same probe: `ls …; git -C <dir> log -1` was filed as Build, because
   `git -C <dir>` hides the subcommand → **VERIFIED** (fix: skip git's `-C <dir>`/`-c k=v` options).
 
+- `tool.call`'s `next(e)` runs core = **the permission prompt and then the tool**; `tool.check` fires
+  after the `tool.call` hooks with the verdict `allow | ask | deny`, before the mode settles an ask →
+  **VERIFIED from the API types**. Consequence for the current build: a tool waiting for the person's
+  approval is shown as "working" (Seat C's A2 timeline applies to the shipped mod too). Fix: on an
+  `ask` verdict show "waiting for your OK" until the call ends.
+- Whether a surface skips re-sending byte-identical Svg markup → **UNVERIFIED**; designs must not
+  rely on it (keep the Svg out of trees that re-render for text).
+
 Still unverified:
 - Whether plugin notices (`$.session.append` type system) or a `turn.complete` text show in a cloud
   session's transcript (likely, since command replies do).
