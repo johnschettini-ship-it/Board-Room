@@ -16,14 +16,14 @@ const say = (...a: unknown[]): void => (globalThis as { console?: { log(...x: un
 const prompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
 /** The world beneath the plugin: an engine that places panes, a mocked clock, a tool that answers. */
-function world(on: On) {
+function world(on: On, shown = true) {
   const clock = mock.clock(on)
   const panes = new Set<string>()
   const counts = { invalidate: 0, audio: 0 }
   on('command.register', () => ({ value: { command: 'workplace' } }))
   on('tool.register', () => ({ value: { tool: STATUS } }))
   on('ui.open', (_, e) => { panes.add(e.id); return { value: { isPlaced: true } } })
-  on('ui.panes', () => ({ value: [...panes].map(id => ({ id, title: 'Digital Workplace', isShown: true, isFocused: false, isPlaced: true })) }))
+  on('ui.panes', () => ({ value: [...panes].map(id => ({ id, title: 'Digital Workplace', isShown: shown, isFocused: false, isPlaced: true })) }))
   on('ui.close', (_, e) => { panes.delete(e.id); return { value: undefined } })
   on('ui.invalidate', () => { counts.invalidate++; return { value: undefined } })
   on('audio.play', () => { counts.audio++; return { value: undefined } })
@@ -260,6 +260,14 @@ test('Windows Terminal gets coloured blocks; the setting can force pictures', { 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Image', key: 'view' })).toBeDefined()
   await ui.unmount()
+})
+
+test('a bare /workplace brings forward a pane that is open but not on screen', async ($, on) => {
+  const w = world(on, false) // open, but another tab is in front
+  await start($)
+  const r = await $.command.run({ command: 'workplace', args: '', origin: { kind: 'composer' }, presentation: PRESENTATION } as never)
+  expect(String((r as { text?: unknown }).text)).toMatch(/shown/)
+  expect(w.panes.has('digital-workplace')).toBe(true)
 })
 
 test('openOnStart false keeps the pane closed until /workplace', { options: { openOnStart: false } }, async ($, on) => {

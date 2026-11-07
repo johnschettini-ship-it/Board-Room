@@ -344,8 +344,11 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'workplace' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'status') return { text: summary(ensureOffice()) }
-    const isOpen = (await $.ui.panes()).some(p => p.id === PANE)
-    const show = arg === 'show' || arg === 'open' || (arg !== 'hide' && arg !== 'close' && !isOpen)
+    // A bare /workplace hides the pane only when it is really on screen; an
+    // open pane on a hidden tab, or one waiting for room, is brought forward.
+    const pane = (await $.ui.panes()).find(p => p.id === PANE)
+    const onScreen = !!pane && pane.isShown && pane.isPlaced
+    const show = arg === 'show' || arg === 'open' || (arg !== 'hide' && arg !== 'close' && !onScreen)
     if (show) {
       const placed = await showPane($)
       return { text: placed ? 'Digital Workplace pane shown.' : 'Digital Workplace pane opened; it shows once there is room for it.' }
