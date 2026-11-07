@@ -47,7 +47,9 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     if (e.tool === 'TaskCreate') return { result: { task: { id: '7', subject: String((e as { subject?: unknown }).subject) } } }
     return { result: { ok: true, tool: e.tool } }
   })
-  on('agent.list', () => ({ value: [{ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' }] }))
+  // What $.agent.list() answers: empty unless a test puts agents in it.
+  const agents: { id: string; type: string; description: string; status: string; parentId?: string }[] = []
+  on('agent.list', () => ({ value: agents as never }))
   // A model request that streams one chunk, then waits until the test lets it finish.
   const step = { release: (): void => {}, usage: null as unknown, toolUses: [] as unknown[] }
   on('turn.step', async function* (_, e) {
@@ -56,7 +58,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
-  return { clock, panes, counts, hold, step, perm }
+  return { clock, panes, counts, hold, step, perm, agents }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -466,6 +468,7 @@ async function stepOpen($: any, w: ReturnType<typeof world>, agentId?: string): 
 test('the compute rack powers one machine per run and reports its tokens', async ($, on) => {
   const w = world(on)
   await start($)
+  w.agents.push({ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' })
   await $.prompt.submit(prompt('Find the hooks'))
   await $.turn.start({ text: 'Find the hooks', turnId: 't1' } as never)
   const done = await stepOpen($, w)
@@ -478,14 +481,14 @@ test('the compute rack powers one machine per run and reports its tokens', async
   const sub = await stepOpen($, w, 'a1')
   await w.clock.advance(250)
   s = await crew($)
-  expect(s).toMatch(/  ● Explore · opus 5\.5 · high · 1 req/)
+  expect(s).toMatch(/  ● Find the hooks API · opus 5\.5 · high · 1 req/) // named by its task
   expect(s).toContain('Compute · ⚡2 on')
   await sub()
   await $.turn.complete({ ...turnDone, agentId: 'a1', usage: usage('claude-opus-5-5', 1200, 300), durationMs: 4000 } as never)
   await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 15000, 2100), durationMs: 9000 } as never)
   s = await crew($)
   expect(s).toContain('○ main · opus 5.5 · high · 24.0k in (9.0k cached) · 2.1k out · 0:09')
-  expect(s).toContain('  ○ Explore · opus 5.5 · high · 10.2k in (9.0k cached) · 300 out · 0:04')
+  expect(s).toContain('  ○ Find the hooks API · opus 5.5 · high · 10.2k in (9.0k cached) · 300 out · 0:04')
   expect(s).toContain('Compute · ⚡0 on')
   expect(s).toMatch(/✓ Done in 0:0\d/)
 })
@@ -779,5 +782,36 @@ test('when the camera moves to a nearby room, the desktop film slides instead of
   expect(src).toMatch(/<g class="cam" style="animation-delay:-?\d+\.\d{3}s">/)
   expect(src).toContain('viewBox="0 0 240 176"') // the view stays one room wide
   expect(src.length).toBeLessThan(131072)
+})
+
+test('subagents already running when the office opens are listed, named by their task', async ($, on) => {
+  const w = world(on)
+  w.agents.push(
+    { id: 'p1', type: 'general-purpose', description: 'Playtest: new player career', status: 'running' },
+    { id: 'p2', type: 'general-purpose', description: 'Playtest: careless player losing', status: 'running' },
+    { id: 'p3', type: 'general-purpose', description: 'Playtest: done already', status: 'completed' },
+  )
+  await start($) // the plugin starts while the playtesters run
+  let s = await crew($)
+  expect(s).toContain('Compute · ⚡2 on')
+  expect(s).toMatch(/  ● Playtest: new player career · running, model not seen yet · 0:00/)
+  expect(s).toContain('Playtest: careless player losing')
+  expect(s).not.toContain('Playtest: done already')
+  // its next request shows the model
+  await $.turn.start({ text: '', turnId: 't1' } as never)
+  const it = $.turn.step({ turnId: 't1', index: 0, model: 'claude-sonnet-5-5', effort: 'medium', messageCount: 2, agentId: 'p1' })[Symbol.asyncIterator]()
+  await it.next()
+  s = await crew($)
+  expect(s).toMatch(/  ● Playtest: new player career · sonnet 5\.5 · medium · 1 req/)
+  w.step.release(); await it.next()
+})
+
+test('after a restart in the middle of a turn, the ticker clock runs from the turn', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.turn.start({ text: '', turnId: 't1' } as never) // no prompt seen: the office opened mid-turn
+  await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
+  await w.clock.advance(3000)
+  expect(await crew($)).toMatch(/^Phase: Working · T\+00:0[234]/m) // was stuck at T+00:00
 })
 

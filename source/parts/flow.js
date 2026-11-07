@@ -414,6 +414,16 @@ function machineDone(key, usage, durationMs) {
   m.on = false; m.endT = simT; m.stepOpen = 0; m.usage = usage ? { ...usage } : m.live; m.durationMs = durationMs == null ? m.durationMs : durationMs;
   if (key === 'main') mainStepOpen = 0;
 }
+// A subagent the engine lists as running before the office has seen a request
+// from it (the plugin started mid-run): on, model unknown until its next one.
+function machineSeed(key, info) {
+  if (!key || key === 'main' || machines.has(key)) return;
+  const m = { key, model: '', effort: '', t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: '', description: '', parentId: null, seq: machines.size,
+    look: makeLook(900 + machines.size, { color: modelColor(''), acc: null }) };
+  machines.set(key, m);
+  machineInfo(key, info);
+  touch(null);
+}
 function machineInfo(key, info) {
   const m = machines.get(key); if (!m || !info) return;
   if (info.type) m.type = String(info.type);

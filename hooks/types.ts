@@ -98,6 +98,8 @@ export type MachineInfo = {
   parentId: string | null
   seconds: number
   usage: Usage | null
+  /** False for a subagent listed as running whose model requests the office has not seen yet. */
+  seen: boolean
 }
 export type MachinesInfo = { list: MachineInfo[]; more: number; on: number }
 
@@ -192,6 +194,8 @@ export interface Office {
   /** One model request finished: add its usage, split across the crew whose tools it asked for. */
   stepDone(key: string, usage: Partial<Usage> | null | undefined, roles: RoleId[]): void
   kpis(): Kpis
+  /** A subagent the engine lists as running, before any of its requests is seen. */
+  machineSeed(key: string, info: { type?: string; description?: string; parentId?: string | null }): void
   /** The main loop's context window: figures from the engine (window, and tokens when known). */
   setContext(c: { tokens?: number; window?: number }): void
   compactStart(trigger?: string): void

@@ -1163,6 +1163,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     m.on = false; m.endT = simT; m.stepOpen = 0; m.usage = usage ? { ...usage } : m.live; m.durationMs = durationMs == null ? m.durationMs : durationMs;
     if (key === 'main') mainStepOpen = 0;
   }
+  // A subagent the engine lists as running before the office has seen a request
+  // from it (the plugin started mid-run): on, model unknown until its next one.
+  function machineSeed(key, info) {
+    if (!key || key === 'main' || machines.has(key)) return;
+    const m = { key, model: '', effort: '', t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: '', description: '', parentId: null, seq: machines.size,
+      look: makeLook(900 + machines.size, { color: modelColor(''), acc: null }) };
+    machines.set(key, m);
+    machineInfo(key, info);
+    touch(null);
+  }
   function machineInfo(key, info) {
     const m = machines.get(key); if (!m || !info) return;
     if (info.type) m.type = String(info.type);
@@ -1940,7 +1950,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function ticker() {
     const m = mission, beat = Math.floor(visBeat()) % 4;
-    if (!m) return { phase: phaseText(), beat, done: 0, total: 0, duets: 0, clock: 'T+00:00', title: '' };
+    // No task seen yet (the office started mid-turn): the clock runs from the turn.
+    if (!m) return { phase: phaseText(), beat, done: 0, total: 0, duets: 0, clock: clockLong(turnOpen ? simT - turnT0 : 0), title: '' };
     const done = m.tasks.filter(t => t.state === 'done').length;
     return { phase: phaseText(), beat, done, total: m.tasks.length, duets: m.duets, clock: clockLong(m.finishedAt !== null && m.phase !== 'execute' ? m.finishedAt : simT - m.startT), title: m.title };
   }
@@ -1987,7 +1998,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function machinesInfo() {
     const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
     const list = all.slice(0, MAX_MACHINES).map(m => ({
-      key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, model: shortModel(m.model), effort: m.effort,
+      key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
       color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId,
       seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
     }));
@@ -2046,7 +2057,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
     startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-    turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo,
+    turnStart: E(turnStart), markWaiting: E(markWaiting), machineSeed: E(machineSeed), stepDone: E(stepDone), kpis: kpiInfo,
     setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },
