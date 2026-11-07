@@ -17,6 +17,8 @@ const PANE = 'digital-workplace'
 const TITLE = 'Digital Workplace'
 const SELF_PREFIX = `mcp__${PLUGIN}__`
 const SVG_LIMIT = 131072
+/** Blocks the app can put ahead of the person's words in a prompt (multiline, non-greedy). */
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
@@ -428,7 +430,9 @@ export const register: Register = (on, options) => {
       if (!e.isMeta && !e.command && e.text.trim()) {
         missionNo++
         const o = ensureOffice()
-        o.startMission(e.text)
+        // Title the mission from the person's own words, not app-injected
+        // reminders; with nothing left, startMission falls back to 'Untitled task'.
+        o.startMission(e.text.replace(SYSTEM_REMINDER, '').trim())
         const open = openCards()
         if (open.length) o.setCards(open)
         frameNo++
