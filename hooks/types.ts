@@ -109,6 +109,14 @@ export type Snapshot = {
 export interface Office {
   advance(seconds: number): void
   render(): Frame
+  /**
+   * Films `count` frames `dt` seconds apart from now, then rewinds; the live
+   * run then replays the same random draws until the next outside event.
+   * onFrame may return false to stop early. Returns the frames filmed.
+   */
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, camX: number) => boolean | void): number
+  /** Bumped by every outside event, press or setting change. */
+  readonly version: number
   readonly zoom: number
   setZoom(z: number): void
   readonly autoCam: boolean

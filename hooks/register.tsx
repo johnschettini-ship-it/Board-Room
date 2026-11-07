@@ -9,6 +9,7 @@
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
+import { filmSvg, shoot, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
 import type { Card, Frame, MachineInfo, Motion, Office, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
@@ -52,6 +53,16 @@ let termPng = { no: -1, zoom: 0, png: '' }
 let cellCache: Cells = { no: -1, zoom: 0, columns: 0, rows: 0, cells: '' }
 let cellBuf = new Uint32Array(0)
 let composed = new Uint8ClampedArray(0)
+// The Svg surfaces' film (stage.ts) and when it was shot, in office seconds.
+let film: Film | null = null
+let lastShot = -Infinity
+let forceShot = false
+// Frames per second of the next film: halved after a film was cut short (busy rooms), back up after a full one.
+let filmFps = 0
+let paneSig = ''
+// Which surfaces draw the pane: null until known (then films and full-rate redraws both run).
+let surfaceKinds: readonly string[] | null = null
+let surfacesAt = -Infinity
 /** What this terminal can draw: pictures (kitty, Ghostty), pictures in fullscreen (iTerm2), or blocks. */
 let termArt: 'image' | 'iterm' | 'blocks' = 'blocks'
 
@@ -375,6 +386,51 @@ function setSound($: Engine, on: boolean): void {
   })
 }
 
+/** Frames rendered during a film are future frames: the per-frame caches must not keep them. */
+function dropFrameCaches(): void {
+  rendered = null
+  cache = { ...cache, no: -1 }
+  termPng = { ...termPng, no: -1 }
+  cellCache = { ...cellCache, no: -1 }
+  lastPixels = null
+}
+
+/**
+ * The current film, shot again when it runs out, after an outside event (at
+ * most once a second, L2 in the design verdict), or at once after a press.
+ */
+function currentFilm(o: Office): { film: Film; fresh: boolean } {
+  const idle = o.ticker().phase === 'Idle'
+  const due = !film || forceShot || film.zoom !== o.zoom ||
+    (o.simT - lastShot >= 1 && (o.version !== film.version || o.simT - film.startT >= film.seconds - 0.5))
+  if (!due) return { film: film!, fresh: false }
+  if (!filmFps) filmFps = opts.frameRate
+  const fps = idle ? Math.max(2, Math.round(filmFps / 2)) : filmFps
+  film = shoot(o, fps, idle ? 6 : 2, SVG_LIMIT - 4096, opts.motion)
+  filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(opts.frameRate, filmFps * 2)
+  lastShot = o.simT
+  forceShot = false
+  dropFrameCaches()
+  return { film, fresh: true }
+}
+
+/** What the Svg surfaces show as text and buttons: they redraw only when it changes. */
+function signature(o: Office): string {
+  const t = o.ticker()
+  return [
+    stripLines(o.strip()).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
+    `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
+    o.rooms().map(r => `${r.current}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
+  ].join('#')
+}
+
+async function surfacesNow($: Engine, simT: number): Promise<readonly string[] | null> {
+  if (simT - surfacesAt < 5) return surfaceKinds
+  surfacesAt = simT
+  try { surfaceKinds = await $.session.surfaces() } catch { surfaceKinds = null }
+  return surfaceKinds
+}
+
 async function tick($: Engine): Promise<void> {
   if (busy) return
   busy = true
@@ -387,9 +443,20 @@ async function tick($: Engine): Promise<void> {
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
-    // Idle office: a quarter of the frame rate is plenty and saves CPU.
-    const idle = o.ticker().phase === 'Idle'
-    if (paneOpen && (!idle || frameNo % 4 === 0)) $.ui.invalidate('ui.render')
+    if (paneOpen) {
+      const kinds = await surfacesNow($, o.simT)
+      const terminal = kinds === null || kinds.includes('terminal')
+      const pictures = kinds === null || kinds.some(k => k !== 'terminal')
+      let redraw = false
+      // Svg surfaces play a film on their own: redraw for a new film or new text only.
+      if (pictures) {
+        const sig = signature(o)
+        if (currentFilm(o).fresh || sig !== paneSig) { paneSig = sig; redraw = true }
+      }
+      // Terminals redraw every frame; an idle office needs only a quarter of the rate.
+      if (terminal && (o.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      if (redraw) $.ui.invalidate('ui.render')
+    }
     const bar = statusBar(o)
     if (bar !== lastStatus) { lastStatus = bar; $.ui.status(bar) }
   } catch {
@@ -616,7 +683,7 @@ export const register: Register = (on, options) => {
     const crew = o.crew()
     const here = rooms.find(r => r.current)?.name ?? ''
     const alt = `Digital Workplace office, ${here} in view. ${statusText(s).slice(2)}`
-    const redraw = (): void => { frameNo++; $.ui.invalidate('ui.render') }
+    const redraw = (): void => { frameNo++; forceShot = true; $.ui.invalidate('ui.render') }
     const beat = ['▪▫▫▫', '▫▪▫▫', '▫▫▪▫', '▫▫▫▪'][t.beat] ?? '▫▫▫▫'
     const ticker = `${t.phase}  ${beat}${t.total ? `  ${t.done}/${t.total} cards` : ''}  Duets ${t.duets}  ${t.clock}`
 
@@ -678,7 +745,8 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
-    const f = encodeFrame(o)
+    const cur = currentFilm(o).film
+    const svg = filmSvg(cur, Math.max(0, o.simT - cur.startT))
     const strip = stripLines(o.strip())
     const compute = computeLines(o)
     return (
@@ -686,7 +754,7 @@ export const register: Register = (on, options) => {
         <Box key="strip" flexDirection="column">
           {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
         </Box>
-        <Svg source={f.svg} alt={alt} />
+        <Svg source={svg} alt={alt} />
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
           {rooms.map(r => (

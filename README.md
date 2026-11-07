@@ -69,13 +69,18 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `openOnStart` | true | Open the pane when a session starts. |
 | `motion` | auto | `auto` hides confetti and disco when the system asks for reduced motion. `reduced` always calms the office. `full` always shows everything. |
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
-| `frameRate` | 8 | Redraws per second, 2 to 10. |
+| `frameRate` | 8 | Frames per second of the office animation, 2 to 10. In a terminal this is also how often the pane redraws. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 | `toolChips` | false | Adds one line under each tool call in the transcript, such as `Kit · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works
 
-The hooks module has no DOM or canvas. `hooks/world.ts` is the page's own simulation and art, generated from `source/agent-boardroom.html` by `source/build_world.py`. It paints into a small software canvas (`hooks/raster.ts`) and each frame goes to the pane as a PNG inside an SVG. Confetti and disco go in a separate layer that a `prefers-reduced-motion` media query hides. Hooks only observe: they never change or delay a tool call or a model request, and a fault in the mod is caught and ignored.
+The hooks module has no DOM or canvas. `hooks/world.ts` is the page's own simulation and art, generated from `source/agent-boardroom.html` by `source/build_world.py`. It paints into a small software canvas (`hooks/raster.ts`).
+
+- **Desktop, mobile and VS Code** get the office as a short film (`hooks/stage.ts`). The office runs ahead for up to 2 seconds, films each frame and rewinds. The Svg holds the first frame plus one layer per later frame with only the pixels that changed, all in one atlas PNG; CSS shows each layer at its time. The client plays it with no further messages, and the pane redraws only for a new film (at most once a second, sooner after a button press) or new text. A tape of the office's random draws makes the live office do exactly what the film showed until the next outside event. Confetti and disco lights are a small CSS overlay that a `prefers-reduced-motion` media query hides; with reduced motion the film also holds still between redraws.
+- **Terminals** get a fresh picture or block-art frame at the frame rate, as before.
+
+A busy two-second film is about 30 KB (one room) or 60 KB (two rooms), against 130 to 200 KB per second for a frame-by-frame stream. Filming costs about 0.1 s of CPU per second while the crew is busy. Hooks only observe: they never change or delay a tool call or a model request, and a fault in the mod is caught and ignored.
 
 One ledger in the hooks module is the source of truth. `tool.call` records each call; `classic.PermissionRequest` marks a call as waiting; `turn.step` powers a machine on for each model request (the stream passes through untouched); `turn.complete` powers it off with the usage the engine reports. Subagent names come from one `$.agent.list()` per new agent, never polled. The design record is in [docs/design-panel](docs/design-panel/verdict.md).
 

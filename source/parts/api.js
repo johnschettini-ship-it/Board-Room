@@ -111,18 +111,20 @@ tableCanvas = buildTable().freeze(); chairCanvas = buildChairs().freeze(); front
 const crewSprites = {};
 for (const a of agents) { const [c, g] = makeCanvas(13, 20); paintSprite(g, 1, 3, 0, 'down', 'down', 0, a, false, false); crewSprites[a.id] = c; }
 
+const E = external;
 return {
-  advance, render,
-  get zoom() { return zoom; }, setZoom,
-  get autoCam() { return autoCam; }, setAutoCam,
-  goRoom, prevRoom: () => goRoom(camTarget() - 1), nextRoom: () => goRoom(camTarget() + 1),
+  advance, render, film,
+  get version() { return version; },
+  get zoom() { return zoom; }, setZoom: E(setZoom),
+  get autoCam() { return autoCam; }, setAutoCam: E(setAutoCam),
+  goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
   canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,
-  toggleFollow: id => select(selectedId === id ? null : id), get selectedId() { return selectedId; },
-  setTheme: k => { if (THEMES[k] && k !== themeKey) applyTheme(k); },
-  setMotion: v => { motion = v; reduceMotion = v === 'reduced'; },
+  toggleFollow: E(id => select(selectedId === id ? null : id)), get selectedId() { return selectedId; },
+  setTheme: E(k => { if (THEMES[k] && k !== themeKey) applyTheme(k); }),
+  setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
-  startMission, toolStart, toolEnd, handoff, bug, turnEnd, setCards,
-  turnStart, markWaiting, machineStep, machineStepEnd, machineDone, machineInfo,
+  startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
+  turnStart: E(turnStart), markWaiting: E(markWaiting), machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
   strip: stripInfo, machines: machinesInfo, toolRole,
   get simT() { return simT; },
 };

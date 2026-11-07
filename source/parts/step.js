@@ -10,8 +10,12 @@ function step(dt) {
   updateParticles(dt);
   updateCamera(dt);
 }
+// Fixed 25 ms steps on a whole-microsecond grid: however the caller slices
+// time, the same steps run in the same order, so a look-ahead (film) and the
+// live run after it stay in step. At most 5 s is caught up.
+const STEP_US = 25000;
+let stepAccUs = 0;
 function advance(seconds) {
-  // Same 50 ms ceiling per step as the page's frame loop; at most 5 s caught up.
-  let left = Math.min(Math.max(0, seconds), 5);
-  while (left > 1e-9) { const s = Math.min(0.05, left); step(s); left -= s; }
+  stepAccUs = Math.min(stepAccUs + Math.round(Math.max(0, seconds) * 1e6), 5e6);
+  while (stepAccUs >= STEP_US) { step(STEP_US / 1e6); stepAccUs -= STEP_US; }
 }

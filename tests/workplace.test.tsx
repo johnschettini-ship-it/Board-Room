@@ -16,7 +16,7 @@ const say = (...a: unknown[]): void => (globalThis as { console?: { log(...x: un
 const prompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
 
 /** The world beneath the plugin: an engine that places panes, a mocked clock, a tool that answers. */
-function world(on: On, shown = true, openReason?: string) {
+function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   const clock = mock.clock(on)
   const hold = { release: (): void => {} }
   const panes = new Set<string>()
@@ -33,6 +33,7 @@ function world(on: On, shown = true, openReason?: string) {
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('ui.status', () => ({ value: undefined }))
+  if (surfaces) on('session.surfaces', () => ({ value: surfaces as never }))
   on('classic.PermissionRequest', () => ({}))
   on('ui.render', { component: 'ToolUse' }, ($, e) => { const { Text } = $.ui.resolve(e); return <Text>row</Text> })
   on('tool.call', (_, e) => {
@@ -518,4 +519,23 @@ test('in a session with no drawing surface, /workplace says so in one line', asy
   const text = String((r as { text?: unknown }).text)
   expect(text).toMatch(/No drawing surface in this session/)
   expect(text.split('\n').length).toBe(1)
+})
+
+test('the desktop pane plays a film and redraws only when something changes', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Read the hooks'))
+  await $.tool.call({ tool: 'Read', file_path: '/a/register.tsx' })
+  await w.clock.advance(1500)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+  expect(src).toContain('class="p"') // frames after the first, revealed on time by CSS
+  expect(src).toMatch(/animation-delay:-?\d+\.\d{3}s/)
+  expect(src).toContain('.p{animation:none}') // reduced motion: the base frame only
+  expect(src.length).toBeLessThan(131072)
+  await ui.unmount()
+  // A quiet second: no new film is due and no text changed beyond the clock.
+  const before = w.counts.invalidate
+  await w.clock.advance(1000)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(3)
 })

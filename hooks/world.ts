@@ -21,7 +21,15 @@ export function createOffice(opts: OfficeOptions = {}): Office {
 
   // ================= helpers =================
   function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
-  const rand = opts.random || Math.random;
+  const rand0 = opts.random || Math.random;
+  // Draws go through a tape: a look-ahead records them (replaying what an earlier
+  // look-ahead already drew first), and the live run replays them (see snap.js).
+  let tapeRec = null, tape = null, tapeI = 0, tapeAhead = null, tapeAheadI = 0;
+  const rand = () => {
+    if (tapeRec) { const v = tapeAhead && tapeAheadI < tapeAhead.length ? tapeAhead[tapeAheadI++] : rand0(); tapeRec.push(v); return v; }
+    if (tape) { if (tapeI < tape.length) return tape[tapeI++]; tape = null; }
+    return rand0();
+  };
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const hash = (a, b) => { const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return s - Math.floor(s); };
@@ -763,7 +771,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const m = String(model || '').toLowerCase();
     return m.includes('opus') ? '#f4b942' : m.includes('sonnet') ? '#5ec8e5' : m.includes('haiku') ? '#78d98e' : m.includes('fable') ? '#f27fb2' : '#b08cf5';
   }
-  function sfx(kind) { if (opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
+  function sfx(kind) { if (!filming && opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
   function announce(msg) { lastAnnounce = msg; }
   function log(text, role) { logRing.push({ t: simT, text, role: role || null }); if (logRing.length > 40) logRing.shift(); }
   function touch(a) { lastEventT = simT; if (a) { focus = a; focusT = simT; } }
@@ -1148,10 +1156,14 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     updateParticles(dt);
     updateCamera(dt);
   }
+  // Fixed 25 ms steps on a whole-microsecond grid: however the caller slices
+  // time, the same steps run in the same order, so a look-ahead (film) and the
+  // live run after it stay in step. At most 5 s is caught up.
+  const STEP_US = 25000;
+  let stepAccUs = 0;
   function advance(seconds) {
-    // Same 50 ms ceiling per step as the page's frame loop; at most 5 s caught up.
-    let left = Math.min(Math.max(0, seconds), 5);
-    while (left > 1e-9) { const s = Math.min(0.05, left); step(s); left -= s; }
+    stepAccUs = Math.min(stepAccUs + Math.round(Math.max(0, seconds) * 1e6), 5e6);
+    while (stepAccUs >= STEP_US) { step(STEP_US / 1e6); stepAccUs -= STEP_US; }
   }
 
   // ================= rendering =================
@@ -1528,6 +1540,80 @@ export function createOffice(opts: OfficeOptions = {}): Office {
 
 
 
+  // ================= look-ahead (film) =================
+  // The office can run ahead for a few seconds, film each frame, and then put
+  // every bit of state back. Values are restored in place, so object identity
+  // (and the callbacks that captured an agent) survives. The random draws made
+  // while filming are kept on a tape that the live run then replays, so the
+  // live office does exactly what the film showed until a new event arrives.
+  let filming = false;
+  function saveGraph(roots) {
+    const saved = new Map();
+    const visit = v => {
+      if (v === null || typeof v !== 'object' || saved.has(v)) return;
+      if (Array.isArray(v)) { saved.set(v, v.slice()); for (const x of v) visit(x); return; }
+      if (v instanceof Map) { saved.set(v, [...v.entries()]); for (const [k, x] of v) { visit(k); visit(x); } return; }
+      if (v instanceof Set) { saved.set(v, [...v]); for (const x of v) visit(x); return; }
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null) return; // canvases and typed arrays are not simulation state
+      const copy = {};
+      for (const k of Object.keys(v)) { copy[k] = v[k]; visit(v[k]); }
+      saved.set(v, copy);
+    };
+    for (const r of roots) visit(r);
+    return saved;
+  }
+  function restoreGraph(saved) {
+    for (const [o, s] of saved) {
+      if (Array.isArray(o)) { o.length = s.length; for (let i = 0; i < s.length; i++) o[i] = s[i]; }
+      else if (o instanceof Map) { o.clear(); for (const [k, x] of s) o.set(k, x); }
+      else if (o instanceof Set) { o.clear(); for (const x of s) o.add(x); }
+      else { for (const k of Object.keys(o)) if (!(k in s)) delete o[k]; Object.assign(o, s); }
+    }
+  }
+  function snapshotAll() {
+    return {
+      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, mission, focus, lastEnded, flickers, antennas]),
+      v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
+    };
+  }
+  function restoreAll(s) {
+    restoreGraph(s.graph);
+    ({ simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs } = s.v);
+  }
+  /**
+   * Films up to `count` frames, `dt` seconds apart, starting with the frame of
+   * now. onFrame(k, frame, camX) may return false to stop early. The office is
+   * left exactly as it was; returns the number of frames filmed.
+   */
+  function film(count, dt, onFrame) {
+    const saved = snapshotAll(), motionWas = motion;
+    // Confetti and disco always go in their own layer while filming: the film
+    // draws them as CSS, so they must not be baked into the frames ('full').
+    if (motion === 'full') motion = 'auto';
+    tapeAhead = tape ? tape.slice(tapeI) : null; tapeAheadI = 0;
+    filming = true; tapeRec = []; tape = null;
+    let n = 0;
+    try {
+      for (let k = 0; k < count; k++) {
+        if (k) advance(dt);
+        const f = render();
+        n++;
+        if (onFrame(k, f, Math.round(camX)) === false) break;
+      }
+    } finally {
+      const rec = tapeAhead ? tapeRec.concat(tapeAhead.slice(tapeAheadI)) : tapeRec;
+      tapeRec = null; tapeAhead = null; filming = false; motion = motionWas;
+      restoreAll(saved);
+      tape = rec; tapeI = 0;
+    }
+    return n;
+  }
+  let version = 0;
+  // Anything from outside (a hook event, a press, a setting) can change what
+  // happens next: the film and the tape no longer hold.
+  const external = f => (...args) => { version++; tape = null; tapeAhead = null; return f(...args); };
+
   // ================= boot and public API =================
   function select(id) { if (!id && selectedId) manualRoom = viewRoom(); selectedId = id; }
   function agentStatus(a) {
@@ -1641,18 +1727,20 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   const crewSprites = {};
   for (const a of agents) { const [c, g] = makeCanvas(13, 20); paintSprite(g, 1, 3, 0, 'down', 'down', 0, a, false, false); crewSprites[a.id] = c; }
 
+  const E = external;
   return {
-    advance, render,
-    get zoom() { return zoom; }, setZoom,
-    get autoCam() { return autoCam; }, setAutoCam,
-    goRoom, prevRoom: () => goRoom(camTarget() - 1), nextRoom: () => goRoom(camTarget() + 1),
+    advance, render, film,
+    get version() { return version; },
+    get zoom() { return zoom; }, setZoom: E(setZoom),
+    get autoCam() { return autoCam; }, setAutoCam: E(setAutoCam),
+    goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
     canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,
-    toggleFollow: id => select(selectedId === id ? null : id), get selectedId() { return selectedId; },
-    setTheme: k => { if (THEMES[k] && k !== themeKey) applyTheme(k); },
-    setMotion: v => { motion = v; reduceMotion = v === 'reduced'; },
+    toggleFollow: E(id => select(selectedId === id ? null : id)), get selectedId() { return selectedId; },
+    setTheme: E(k => { if (THEMES[k] && k !== themeKey) applyTheme(k); }),
+    setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
-    startMission, toolStart, toolEnd, handoff, bug, turnEnd, setCards,
-    turnStart, markWaiting, machineStep, machineStepEnd, machineDone, machineInfo,
+    startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
+    turnStart: E(turnStart), markWaiting: E(markWaiting), machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },
   };

@@ -49,7 +49,7 @@
     "frameRate": {
       "type": "number",
       "title": "Frames per second",
-      "description": "How often the pane redraws, 2 to 10. Lower uses less bandwidth.",
+      "description": "Frames per second of the office animation, 2 to 10. In a terminal this is also how often the pane redraws.",
       "default": 8
     },
     "terminalArt": {

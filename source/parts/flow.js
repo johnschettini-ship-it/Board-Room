@@ -23,7 +23,7 @@ function modelColor(model) {
   const m = String(model || '').toLowerCase();
   return m.includes('opus') ? '#f4b942' : m.includes('sonnet') ? '#5ec8e5' : m.includes('haiku') ? '#78d98e' : m.includes('fable') ? '#f27fb2' : '#b08cf5';
 }
-function sfx(kind) { if (opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
+function sfx(kind) { if (!filming && opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
 function announce(msg) { lastAnnounce = msg; }
 function log(text, role) { logRing.push({ t: simT, text, role: role || null }); if (logRing.length > 40) logRing.shift(); }
 function touch(a) { lastEventT = simT; if (a) { focus = a; focusT = simT; } }
