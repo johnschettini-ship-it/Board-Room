@@ -1841,13 +1841,18 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   /**
    * Films up to `count` frames, `dt` seconds apart, starting with the frame of
    * now. onFrame(k, frame, view) may return false to stop early. The office is
-   * left exactly as it was; returns the number of frames filmed. With `cut`,
+   * left exactly as it was; returns the number of frames filmed. With `cut`
+   * an object { x, w }, frames are drawn over a fixed, wider strip of the world
+   * (w px from x) so the client can slide the camera across it (view.camX is the
+   * live camera's offset into the strip). With `cut` true,
    * each frame is drawn with the camera already at the room it is heading for
    * (the camera only affects drawing, so the run itself is the same): a pan
    * becomes one cut, which a film can carry cheaply.
    */
   function film(count, dt, onFrame, cut) {
     const saved = snapshotAll(), motionWas = motion;
+    const pan = cut && typeof cut === 'object' ? cut : null, normal = { VWc, ctx, fxCtx, fxOut };
+    if (pan) { VWc = pan.w; ctx = new Px(pan.w, H); fxCtx = new Px(pan.w, H); fxOut = new Px(pan.w, H); }
     // Confetti and disco always go in their own layer while filming: the film
     // draws them as CSS, so they must not be baked into the frames ('full').
     if (motion === 'full') motion = 'auto';
@@ -1858,8 +1863,10 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       for (let k = 0; k < count; k++) {
         if (k) advance(dt);
         const live = camX;
-        if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc);
-        const shown = viewKey(), f = render();
+        let shown;
+        if (pan) { shown = { key: 'pan', hallX: TOWN * RW - pan.x, camX: Math.round(camX) - pan.x }; camX = pan.x; }
+        else { if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc); shown = viewKey(); }
+        const f = render();
         camX = live;
         n++;
         if (onFrame(k, f, shown) === false) break;
@@ -1867,10 +1874,29 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     } finally {
       const rec = tapeAhead ? tapeRec.concat(tapeAhead.slice(tapeAheadI)) : tapeRec;
       tapeRec = null; tapeAhead = null; filming = false; motion = motionWas;
+      if (pan) ({ VWc, ctx, fxCtx, fxOut } = normal);
       restoreAll(saved);
       tape = rec; tapeI = 0;
     }
     return n;
+  }
+  /**
+   * Where the live camera will be over the next `count` frames, without drawing
+   * (the same run a film then replays from the tape), and whether rooms are pinned.
+   */
+  function camPath(count, dt) {
+    const saved = snapshotAll(), xs = [];
+    tapeAhead = tape ? tape.slice(tapeI) : null; tapeAheadI = 0;
+    filming = true; tapeRec = []; tape = null;
+    try {
+      for (let k = 0; k < count; k++) { if (k) advance(dt); xs.push(Math.round(camX)); }
+    } finally {
+      const rec = tapeAhead ? tapeRec.concat(tapeAhead.slice(tapeAheadI)) : tapeRec;
+      tapeRec = null; tapeAhead = null; filming = false;
+      restoreAll(saved);
+      tape = rec; tapeI = 0;
+    }
+    return { xs, pinned: !!viewSlots(), width: VWc };
   }
   let version = 0;
   // Anything from outside (a hook event, a press, a setting) can change what
@@ -2008,7 +2034,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
 
   const E = external;
   return {
-    advance, render, film,
+    advance, render, film, camPath,
     get version() { return version; },
     get zoom() { return zoom; }, setZoom: E(z => { setZoom(z); trimPins(); }),
     togglePin: E(togglePin), clearPins: E(clearPins), get pinned() { return zoom > 1 ? pinned.slice() : []; },

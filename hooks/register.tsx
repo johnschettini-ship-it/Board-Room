@@ -444,23 +444,40 @@ function dropFrameCaches(): void {
  * The current film, shot again when it runs out, after an outside event (at
  * most once a second, L2 in the design verdict), or at once after a press.
  */
+// Film rates must land on the office's 25 ms steps (40/n fps). Smoother with
+// one room in view, lighter with three (measured: about 11% / 7% / 19% of a
+// core while the crew is busy).
+const FILM_FPS = [20, 10, 8, 5, 4]
+const baseFps = (zoom: number): number => (zoom >= 3 ? 8 : zoom === 2 ? 10 : 20)
+const lowerFps = (f: number): number => FILM_FPS.find(x => x < f) ?? 4
+const higherFps = (f: number, cap: number): number => Math.min(cap, [...FILM_FPS].reverse().find(x => x > f) ?? cap)
+/** How far ahead to film: about as far as recent films were actually used. */
+let horizon = 2
+
+/**
+ * The current film, shot again (measured on a busy minute: no freezes, events
+ * on screen in about 0.1 s instead of 0.5 s):
+ * - soon after an outside event (0.25 s, so a burst of events is one shot);
+ * - when it runs out or was cut short (a busy room filled its budget);
+ * - at once after a press, a zoom change or a camera cut.
+ */
 function currentFilm(o: Office): { film: Film | null; fresh: boolean } {
   const idle = o.ticker().phase === 'Idle'
   const elapsed = film ? o.simT - film.startT : 0
   const due = !film || forceShot || film.zoom !== o.zoom ||
-    // the camera cuts to another room: the next film starts there, gate or not
     (film.cutAt !== null && elapsed >= film.cutAt - 1e-6) ||
-    (o.simT - lastShot >= 1 && (o.version !== film.version || elapsed >= film.seconds - 0.5))
+    (o.simT - lastShot >= 0.25 && (o.version !== film.version || elapsed >= film.seconds - 0.25))
   if (!due) return { film, fresh: false }
+  if (film) horizon = Math.min(2, Math.max(0.75, horizon * 0.5 + elapsed * 0.75))
   // Set first: a shot that throws must not be retried on every tick.
   lastShot = o.simT
   forceShot = false
-  const rate = frameRate()
-  if (!filmFps) filmFps = rate
-  const fps = idle ? Math.max(2, Math.round(filmFps / 2)) : filmFps
+  const base = baseFps(o.zoom)
+  if (!filmFps || filmFps > base) filmFps = base
+  const fps = idle ? lowerFps(filmFps) : filmFps
   try {
-    film = shoot(o, fps, idle ? 6 : 2, SVG_LIMIT - 4096, opts.motion)
-    filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(rate, filmFps * 2)
+    film = shoot(o, fps, idle ? 6 : horizon, SVG_LIMIT - 4096, opts.motion)
+    filmFps = film.cut ? lowerFps(filmFps) : higherFps(filmFps, base)
   } catch {
     // Keep the last film (or none: the pane then draws a single frame).
   } finally {

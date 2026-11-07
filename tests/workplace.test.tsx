@@ -760,3 +760,24 @@ test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to t
   expect(await svgOf(ui3 as never)).toContain('viewBox="0 0 720 176"')
   await ui3.unmount()
 })
+
+test('when the camera moves to a nearby room, the desktop film slides instead of cutting', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Plan, then read'))
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Read the page', status: 'in_progress', activeForm: 'Reading' }] } as never)
+  await w.clock.advance(3000) // the briefing holds the camera in the boardroom
+  await $.tool.call({ tool: 'Read', file_path: '/work/page.html' }) // Qix works two rooms away
+  let src = ''
+  for (let i = 0; i < 16 && !src.includes('@keyframes cam'); i++) {
+    await w.clock.advance(125)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+    await ui.unmount()
+  }
+  expect(src).toContain('@keyframes cam') // the view slides across the frames
+  expect(src).toMatch(/<g class="cam" style="animation-delay:-?\d+\.\d{3}s">/)
+  expect(src).toContain('viewBox="0 0 240 176"') // the view stays one room wide
+  expect(src.length).toBeLessThan(131072)
+})
+

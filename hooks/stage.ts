@@ -45,6 +45,12 @@ export type Film = {
   size: number
   /** True when the change budget or the size limit ended the film early. */
   cut: boolean
+  /** Width of the view (the frames may be wider when the camera slides across them). */
+  viewW: number
+  /** The base frame's <image> tag (inside the camera group). */
+  baseTag: string
+  /** Per frame, the camera's x offset into the frames; null when it does not move. */
+  pan: number[] | null
 }
 
 /** The changed pixels of `cur` against `prev`, boxed per band and gap; unchanged pixels transparent. */
@@ -130,27 +136,44 @@ function partyMarkup(p: Party, now: number, elapsed: number): string {
 }
 const PARTY_SIZE = 7600
 
-function assemble(base: string, W: number, H: number, layers: Layer[], party: Party | null, motion: Motion): { head: string; size: number } {
+/** The camera slide: one keyframe per film frame, linear in between (smooth at any refresh rate). */
+function camCss(pan: number[] | null, dt: number, motion: Motion): string {
+  if (!pan || pan.length < 2 || pan.every(v => v === pan[0])) return ''
+  const n = pan.length, stops = pan.map((v, k) => `${+(k / (n - 1) * 100).toFixed(6)}%{transform:translateX(${-v}px)}`).join('')
+  return `.cam{animation:cam ${+((n - 1) * dt).toFixed(6)}s linear forwards}@keyframes cam{${stops}}` +
+    (motion === 'full' ? '' : `@media (prefers-reduced-motion: reduce){.cam{animation:none;transform:translateX(${-pan[0]!}px)}}`)
+}
+function assemble(base: string, W: number, H: number, viewW: number, layers: Layer[], party: Party | null, motion: Motion, pan: number[] | null, dt: number): { head: string; baseTag: string; size: number } {
   const a = atlas(layers)
   const head =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${W * 2}" height="${H * 2}" viewBox="0 0 ${W} ${H}"><style>${style(motion)}</style>` +
-    (a ? `<defs><image id="a" width="${a.w}" height="${a.h}" href="data:image/png;base64,${a.png}"/></defs>` : '') +
-    `<image width="${W}" height="${H}" href="data:image/png;base64,${base}"/>`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${viewW * 2}" height="${H * 2}" viewBox="0 0 ${viewW} ${H}"><style>${style(motion)}${camCss(pan, dt, motion)}</style>` +
+    (a ? `<defs><image id="a" width="${a.w}" height="${a.h}" href="data:image/png;base64,${a.png}"/></defs>` : '')
+  const baseTag = `<image width="${W}" height="${H}" href="data:image/png;base64,${base}"/>`
   // Markup on top of the head: ≈85 characters per box, ≈50 per frame.
   const frames = new Set(layers.map(l => l.t)).size
-  return { head, size: head.length + layers.length * 85 + frames * 50 + (party ? PARTY_SIZE : 0) + 10 }
+  return { head, baseTag, size: head.length + baseTag.length + layers.length * 85 + frames * 50 + (party ? PARTY_SIZE : 0) + 80 }
 }
 
 /**
  * Films the office ahead for up to `seconds` at `fps` and packs it as an Svg
  * film of at most `limit` characters. The office ends where it started.
  */
-export function shoot(o: Office, fps: number, seconds: number, limit: number, motion: Motion): Film {
+export function shoot(o: Office, fps: number, seconds: number, limit: number, motion: Motion, slide = true): Film {
   const dt = 1 / fps
   const layers: Layer[] = []
   let prev: Uint32Array | null = null, base = '', W = 0, H = 0, changed = 0, frames = 0, key0 = '', hallX: number | null = null
   let fxFrom: number | null = null, cutAt: number | null = null, budgetHit = false
   const count = Math.max(1, Math.round(seconds * fps) + 1)
+  // A camera move that keeps the frames within three rooms slides (the frames
+  // cover every room it passes and CSS moves the view): up to two rooms with
+  // one in view, one with two, none with three. Longer jumps and pinned rooms cut.
+  const path = slide ? o.camPath(count, dt) : null
+  let strip: { x: number; w: number } | null = null
+  if (path && !path.pinned) {
+    const lo = Math.min(...path.xs), hi = Math.max(...path.xs)
+    if (hi > lo && path.width + hi - lo <= 720) strip = { x: lo, w: path.width + hi - lo }
+  }
+  const viewW = path ? path.width : 0, offsets: number[] = []
   o.film(count, dt, (k, f, view) => {
     if (k === 0) {
       W = f.width; H = f.height; key0 = view.key; hallX = view.hallX
@@ -167,30 +190,35 @@ export function shoot(o: Office, fps: number, seconds: number, limit: number, mo
       if (boxes.length) prev!.set(f.base.u32)
     }
     if (f.fx && fxFrom === null) fxFrom = k * dt
+    offsets.push(view.camX ?? 0)
     frames = k + 1
     return true
-  }, true)
+  }, strip ?? true)
+  const vw = strip ? viewW : W
+  const panOf = (n: number): number[] | null => (strip ? offsets.slice(0, n) : null)
   let party: Party | null = null
   if (fxFrom !== null && motion !== 'reduced' && hallX !== null) {
     party = { hx: hallX, inFx: motion !== 'full', from: fxFrom }
   }
   // Over the limit after compression: drop the second half of the film until it fits.
-  let keep = frames, kept = layers, built = assemble(base, W, H, kept, party, motion)
+  let keep = frames, kept = layers, built = assemble(base, W, H, vw, kept, party, motion, panOf(keep), dt)
   while (built.size > limit && keep > 1) {
     keep = Math.max(1, Math.floor(keep / 2))
     kept = layers.filter(l => l.t < (keep - 0.5) * dt)
-    built = assemble(base, W, H, kept, party, motion)
+    built = assemble(base, W, H, vw, kept, party, motion, panOf(keep), dt)
   }
   return {
     version: o.version, startT: o.simT, seconds: (keep - 1) * dt, dt, cutAt: keep === frames ? cutAt : null,
     width: W, height: H, zoom: o.zoom, head: built.head, layers: kept, party, size: built.size,
-    cut: budgetHit || keep < frames,
+    cut: budgetHit || keep < frames, viewW: vw, baseTag: built.baseTag, pan: panOf(keep),
   }
 }
 
 /** The film's markup for a moment `elapsed` seconds after its first frame. */
 export function filmSvg(f: Film, elapsed: number): string {
-  let s = f.head, t = -1
+  // The camera group: slides when the film pans, else holds its one offset.
+  const slides = !!f.pan && f.pan.length > 1 && f.pan.some(v => v !== f.pan![0])
+  let s = f.head + (slides ? `<g class="cam" style="animation-delay:${(-elapsed).toFixed(3)}s">` : f.pan && f.pan[0] ? `<g transform="translate(${-f.pan[0]} 0)">` : '<g>') + f.baseTag, t = -1
   // One timed group per frame; each box inside is a window onto the atlas.
   for (const l of f.layers) {
     if (l.t !== t) { s += `${t < 0 ? '' : '</g>'}<g class="p" style="animation-delay:${(l.t - elapsed).toFixed(3)}s">`; t = l.t }
@@ -198,5 +226,5 @@ export function filmSvg(f: Film, elapsed: number): string {
   }
   if (t >= 0) s += '</g>'
   if (f.party) s += partyMarkup(f.party, f.startT + elapsed, elapsed)
-  return s + '</svg>'
+  return s + '</g></svg>'
 }

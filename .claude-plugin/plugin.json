@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -49,7 +49,7 @@
     "frameRate": {
       "type": "number",
       "title": "Frames per second",
-      "description": "Frames per second of the office animation, 2 to 10. In a terminal this is also how often the pane redraws.",
+      "description": "How often a terminal redraws the office, 2 to 10 times a second. In the app the office plays as films (20, 10 or 8 frames a second by rooms in view).",
       "default": 8
     },
     "terminalArt": {
