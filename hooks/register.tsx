@@ -11,7 +11,7 @@ import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
 import { filmSvg, shoot, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
-import type { Card, Frame, MachineInfo, Motion, Office, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
+import type { Card, ContextInfo, Frame, Kpis, MachineInfo, Motion, Office, RoleId, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -101,16 +101,17 @@ const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : Stri
 function stripLines(st: StripInfo): Line[] {
   const out: Line[] = []
   if (st.receipt) {
-    const clean = st.receipt.startsWith('Done') && !st.failures.length
-    out.push({ key: 'h', text: `${clean ? '✓' : st.receipt.startsWith('Done') ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
+    const finished = /^(Done|Shipped)/.test(st.receipt), clean = finished && !st.failures.length
+    out.push({ key: 'h', text: `${clean ? '✓' : finished ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
   }
   else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
-  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
+  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Zorya thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
   else if (st.open) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
   else out.push({ key: 'h', text: '○ Crew idle', dim: true })
   // Same shape as the old status line: name (role) · raw tool · target · time.
   for (const r of st.running.slice(0, 4)) {
-    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}`
+    const model = r.model && (r.sub || r.model !== st.mainModel) ? ` · ${r.model}` : ''
+    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}${model}`
     out.push(r.waiting
       ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · asked for your OK`, color: '#f4b942' }
       : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
@@ -124,18 +125,64 @@ function stripLines(st: StripInfo): Line[] {
   }
   return out
 }
+function kpiLine(kp: Kpis): Line | null {
+  if (!kp.requests && !kp.calls) return null
+  const cached = kp.tokensIn ? ` (${Math.round(kp.cached * 100)}% cached)` : ''
+  const plan = kp.planTotal ? ` · Plan ${kp.planDone}/${kp.planTotal}` : ''
+  return { key: 'kpi', text: `Tokens ${k(kp.tokensIn)} in${cached} · ${k(kp.tokensOut)} out · Calls ${kp.calls}${kp.failed ? ` (${kp.failed} failed)` : ''}${plan} · ${kp.requests} req · ${mmss(kp.seconds)}`, dim: true }
+}
+/** The strip with the turn's KPIs under its first line. */
+function truthLines(o: Office): Line[] {
+  const lines = stripLines(o.strip()), kp = kpiLine(o.kpis())
+  if (kp) lines.splice(1, 0, kp)
+  return lines
+}
 function machineLine(m: MachineInfo): Line {
   const indent = m.key === 'main' ? '' : '  '
   const head = `${indent}${m.on ? '●' : '○'} ${m.name} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
-  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req · ${mmss(m.seconds)}`, color: m.color }
   const u: Usage | null = m.usage
+  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${k(u.output_tokens)} out` : ''} · ${mmss(m.seconds)}`, color: m.color }
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
   return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
 }
+// What the account spends: a subscription's plan windows (no dollars: the
+// plan is not billed per token), or an API key's dollars. From the engine's
+// session figures (session.usage at start, session.measure after each turn).
+type Limit = { kind: string; percentUsed: number; resetsAt?: string }
+let account: { limits: Limit[]; usd: number | null } = { limits: [], usd: null }
+let wallNow = 0
+const WINDOW_NAMES: Record<string, string> = { five_hour: '5-hour', seven_day: 'weekly', spend_limit: 'spend limit' }
+function untilText(iso?: string): string {
+  const ms = iso && wallNow ? Date.parse(iso) - wallNow : NaN
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60)
+  return ` (resets in ${d ? `${d}d ${h}h` : h ? `${h}h ${m % 60}m` : `${m}m`})`
+}
+function setAccount(u: { rateLimits?: readonly Limit[]; cost?: { usd: number } } | undefined): void {
+  if (!u) return
+  if (Array.isArray(u.rateLimits)) account = { ...account, limits: u.rateLimits.filter(l => Number.isFinite(l.percentUsed)).map(l => ({ kind: String(l.kind), percentUsed: l.percentUsed, resetsAt: l.resetsAt })) }
+  if (u.cost && Number.isFinite(u.cost.usd)) account = { ...account, usd: u.cost.usd }
+}
+function usageLine(o: Office): Line | null {
+  const kp = o.kpis(), tokens = kp.sessionTokens ? `${k(kp.sessionTokens)} tokens this session` : ''
+  if (account.limits.length) {
+    const parts = account.limits.map(l => `${WINDOW_NAMES[l.kind] ?? l.kind.replace(/_/g, ' ')} ${l.percentUsed}%${untilText(l.resetsAt)}`)
+    const spend = account.limits.some(l => l.kind === 'spend_limit') && account.usd !== null ? ` · $${account.usd.toFixed(2)}` : ''
+    const top = Math.max(...account.limits.map(l => l.percentUsed))
+    return { key: 'use', text: `Plan · ${parts.join(' · ')}${spend}${tokens ? ` · ${tokens}` : ''}`, color: top >= 95 ? '#ff6b6b' : top >= 80 ? '#f4b942' : undefined, dim: top < 80 }
+  }
+  if (account.usd !== null && account.usd > 0) return { key: 'use', text: `API · $${account.usd.toFixed(2)} this session${tokens ? ` · ${tokens}` : ''}`, dim: true }
+  return tokens ? { key: 'use', text: `Session · ${tokens}`, dim: true } : null
+}
+function contextText(c: ContextInfo): string {
+  if (c.compacting) return ' · context: compacting…'
+  if (c.tokens === null || !c.window) return ''
+  return ` · context ${c.percent}% (${k(c.tokens)} of ${k(c.window)})`
+}
 function computeLines(o: Office): Line[] {
-  const mi = o.machines()
-  if (!mi.list.length) return []
-  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on`, dim: true }, ...mi.list.map(machineLine)]
+  const mi = o.machines(), ctx = contextText(o.context()), use = usageLine(o)
+  if (!mi.list.length && !ctx && !use) return []
+  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on${ctx}`, dim: true }, ...(use ? [use] : []), ...mi.list.map(machineLine)]
   if (mi.more) out.push({ key: 'cm', text: `  +${mi.more} more machines`, dim: true })
   return out
 }
@@ -143,7 +190,7 @@ function statusBar(o: Office): string | undefined {
   const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
   const r = st.running.find(x => x.waiting) ?? st.running[st.running.length - 1]
   if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${r.waiting ? ' · asked for your OK' : ''}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
-  if (st.thinking !== null) return `Workplace: Nova thinking ${mmss(st.thinking)}${power}`
+  if (st.thinking !== null) return `Workplace: Zorya thinking ${mmss(st.thinking)}${power}`
   if (st.receipt && st.turnSeconds >= 0 && o.ticker().phase !== 'Idle') return `Workplace: ${st.receipt}`
   return undefined
 }
@@ -198,11 +245,11 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
 
 // ---- tool calls ----
 /** Starts the crew on a call; true when an activity was opened that must be closed. */
-function before(route: Route, tool: string, input: Record<string, unknown>, id: string): boolean {
+function before(route: Route, tool: string, input: Record<string, unknown>, id: string, agentId?: string): boolean {
   const o = ensureOffice()
   let opened = false
   if (route.kind === 'launch') o.handoff('lead', route.role, 'handoff', route.title)
-  else if (route.kind === 'work') { o.toolStart(id, route.role, tool, route.label); opened = true }
+  else if (route.kind === 'work') { o.toolStart(id, route.role, tool, route.label, { run: agentId ?? 'main', ship: route.isShip === true }); opened = true }
   try { if (planBefore(tool, input)) o.setCards(openCards()) } catch { /* a malformed plan draws no cards */ }
   return opened
 }
@@ -427,7 +474,7 @@ const frameRate = (): number => Math.min(10, Math.max(2, Math.round(opts.frameRa
 function signature(o: Office): string {
   const t = o.ticker()
   return [
-    stripLines(o.strip()).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
+    truthLines(o).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
     `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
     o.rooms().map(r => `${r.current}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
   ].join('#')
@@ -445,6 +492,7 @@ async function tick($: Engine): Promise<void> {
   busy = true
   try {
     const now = await $.clock.now()
+    wallNow = now
     const dt = lastTick ? (now - lastTick) / 1000 : 0
     lastTick = now
     const o = ensureOffice()
@@ -496,6 +544,14 @@ async function paneReport($: Engine): Promise<string> {
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
+/** Which crew member a requested tool call belongs to; planning, hand-offs and the mod's own tools are Zorya's. */
+function roleOf(name: string, input: unknown): RoleId {
+  try {
+    const r = routeTool(String(name), (input && typeof input === 'object' ? input : {}) as Record<string, unknown>, SELF_PREFIX)
+    return r.kind === 'work' ? r.role : 'lead'
+  } catch { return 'lead' }
+}
+
 async function describeAgent($: Engine, id: string): Promise<void> {
   try {
     const a = (await $.agent.list()).find(x => x.id === id)
@@ -509,11 +565,12 @@ function summary(o: Office): string {
   return [
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
-    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}`),
+    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} tokens` : ''}`),
+    ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
     'Strip:',
-    ...stripLines(s.strip).map(l => `  ${l.text}`),
+    ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
     'Recent:',
     ...s.log.slice(-8).map(l => `  ${s.simT - l.t < 0.05 ? 'now' : `${(s.simT - l.t).toFixed(1)}s ago`} · ${l.text}`),
@@ -540,6 +597,8 @@ export const register: Register = (on, options) => {
         description: 'Digital Workplace: report what the office crew is doing right now (phase, who works on which tool, duets, plan cards). Read-only.',
         inputSchema: { type: 'object', properties: {} },
       })
+      // The window size (and the fill, if a response already came) for the context tank.
+      try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }); setAccount(u as never) } catch { /* not offered here */ }
       if (!started) {
         started = true
         const ms = Math.round(1000 / frameRate())
@@ -607,7 +666,7 @@ export const register: Register = (on, options) => {
     let opened = false
     try {
       route = routeTool(tool, input, SELF_PREFIX)
-      opened = before(route, tool, input, id)
+      opened = before(route, tool, input, id, (e as { agentId?: string }).agentId)
     } catch { /* never in the way of a tool */ }
     let ok = false
     try {
@@ -644,12 +703,39 @@ export const register: Register = (on, options) => {
       ensureOffice().machineStep(key, e.model, e.effort)
       if (e.agentId && !agentsAsked.has(e.agentId)) { agentsAsked.add(e.agentId); void describeAgent($, e.agentId) }
     } catch { /* never in the way of a turn */ }
+    let r: { usage?: unknown; toolUses?: readonly { name: string; input: unknown }[] } | undefined
     try {
-      return yield* next(e)
+      r = yield* next(e)
+      return r as never
     } finally {
-      try { ensureOffice().machineStepEnd(key) } catch { /* ignore */ }
+      try {
+        const o = ensureOffice()
+        o.machineStepEnd(key)
+        // The request's tokens go to the crew whose tools it asked for (none: Zorya).
+        if (r) o.stepDone(key, r.usage as Partial<Usage> | null, (r.toolUses ?? []).map(t => roleOf(t.name, t.input)))
+      } catch { /* ignore */ }
     }
   })
+
+  // The context window, as the status line has it: pushed after each main turn.
+  on('session.measure', ($, e, next) => {
+    try {
+      const c = (e as { context?: { tokens?: number; window?: number } }).context
+      if (c) ensureOffice().setContext({ tokens: c.tokens, window: c.window })
+      setAccount(e as never)
+    } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Compaction: the boardroom tank drains while the conversation is summarized.
+  on('classic.PreCompact', async ($, e, next) => {
+    try { ensureOffice().compactStart(String((e as { trigger?: unknown }).trigger ?? 'auto')) } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+  on('classic.PostCompact', async ($, e, next) => {
+    try { ensureOffice().compactEnd() } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', ($, e, next) => {
     try {
@@ -708,7 +794,7 @@ export const register: Register = (on, options) => {
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
       // Fit the office to the pane: leave two rows under it for the status
       // line and the ticker, and keep its shape by narrowing it if needed.
-      const strip = stripLines(o.strip())
+      const strip = truthLines(o)
       const compute = computeLines(o)
       const bodyRows = e.props.scroll?.bodyRows ?? 40
       // Too small for pixels: the strip and compute rows alone stay readable.
@@ -763,7 +849,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
     const cur = currentFilm(o).film
     const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
-    const strip = stripLines(o.strip())
+    const strip = truthLines(o)
     const compute = computeLines(o)
     return (
       <Box flexDirection="column" gap={1}>
@@ -801,7 +887,7 @@ export const register: Register = (on, options) => {
                   <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
                 </Button>
                 <Text size="footnote" dimColor wrap="truncate-end">{c.status}</Text>
-                <Text size="caption" dimColor>{`${c.done} done`}</Text>
+                <Text size="caption" dimColor>{`${c.done} done${c.tokens ? ` · ${k(c.tokens)} tokens` : ''}`}</Text>
               </Box>
             </Box>
           ))}

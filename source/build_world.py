@@ -69,6 +69,21 @@ art = '\n\n'.join([
     section('path grid', 'state'),
 ])
 
+# Nova orchestrates from the boardroom; the crew works side by side at the
+# open office's top desk (one monitor each); cousins take the old desks.
+art = patch(art, "const STATIONS = { lead: at(2, 120, 70, 'down'), research: at(4, 180, 88, 'up'), design: at(4, 40, 104, 'up'), build: at(5, 94, 80, 'up'), review: at(5, 172, 122, 'up'), qa: at(6, 176, 86, 'up') };",
+            "const STATIONS = { lead: at(3, 120, 54, 'down'), research: at(5, 42, 80, 'up'), build: at(5, 86, 80, 'up'), review: at(5, 104, 80, 'up'), design: at(5, 146, 80, 'up'), qa: at(5, 198, 80, 'up') };")
+art = patch(art, "  [5, 42, 80, 'up', 'type'], [5, 146, 80, 'up', 'type'], [5, 198, 80, 'up', 'type'], [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'],",
+            "  [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'], [5, 172, 122, 'up', 'type'],\n  [2, 120, 70, 'down', 'type'], [4, 180, 88, 'up', 'read'], [4, 40, 104, 'up', 'type'], [6, 176, 86, 'up', 'type'],")
+
+# Alien crew names (display only; ids stay).
+art = patch(art, "{ id: 'nova', name: 'Nova',", "{ id: 'nova', name: 'Zorya',")
+art = patch(art, "{ id: 'pax', name: 'Pax',", "{ id: 'pax', name: 'Qix',")
+art = patch(art, "{ id: 'iris', name: 'Iris',", "{ id: 'iris', name: 'Lumi',")
+art = patch(art, "{ id: 'kit', name: 'Kit',", "{ id: 'kit', name: 'Brix',")
+art = patch(art, "{ id: 'vale', name: 'Vale',", "{ id: 'vale', name: 'Vex',")
+art = patch(art, "{ id: 'dot', name: 'Dot',", "{ id: 'dot', name: 'Pip',")
+
 cousins = section('cousins:', 'scenery')
 
 scenery = section('scenery', 'sprite painting')
@@ -120,6 +135,23 @@ rendering = patch(rendering, "  const done = m.tasks.filter(t => t.state === 'do
                   "  const done = m.tasks.filter(t => t.state === 'done').length, n = Math.max(1, m.tasks.length);\n  if (m.phase === 'execute') {")
 rendering = patch(rendering, "  if (isWorking(iris)) { const w = Math.round(36 * iris.task.progress);",
                   "  if (isWorking(iris)) { const w = Math.round(36 * iris.workProg);")
+# Orchestration rooms: the boardroom wall shows the turn's KPIs after the
+# briefing; crew desk monitors show tokens (desks.js); the desks the crew left
+# in the Studio, IT lab and Lead office go to working cousins.
+rendering = patch(rendering, "    default: {\n      drawText(ctx, title, x0 + 2, y0 + 2, fg);",
+                  "    default: {\n      if (m.phase !== 'present') { drawKpis(S); break; }\n      drawText(ctx, title, x0 + 2, y0 + 2, fg);")
+d0 = rendering.index("    case 'done': {")
+d1 = rendering.index("    default: {", d0)
+rendering = rendering[:d0] + "    case 'done': drawKpis(S); break; // the finished turn's KPIs stay up until the next one\n" + rendering[d1:]
+rendering = patch(rendering, "  const pw = isWorking(agentByRole.research);", "  const pw = true; // a cousin researches at this desk now")
+k0 = rendering.index("  const kw = isWorking(agentByRole.build);")
+k1 = rendering.index("  const vw = isWorking(agentByRole.review);", k0)
+rendering = rendering[:k0] + "  drawDesks();\n" + rendering[k1:]
+rendering = patch(rendering, "  const vw = isWorking(agentByRole.review);", "  const vw = true; // a cousin works at this desk now")
+rendering = patch(rendering, "  const iris = agentByRole.design;\n  if (isWorking(iris)) { const w = Math.round(36 * iris.workProg);",
+                  "  { /* a cousin's design in progress */ const w = Math.round(36 * ((t / 8) % 1));")
+rendering = patch(rendering, "  const dw = isWorking(agentByRole.qa);", "  const dw = [...machines.values()].some(m => m.on); // the racks are the compute view")
+
 # render(): split into paint(target, fx) so motion effects can ship as their own layer.
 r0 = rendering.index('function render() {')
 r1 = rendering.index('\n}', r0) + 2
@@ -155,6 +187,7 @@ body = '\n\n'.join([
     rendering,
     pads,
     cam,
+    part('desks.js'),
     part('snap.js'),
     part('api.js'),
 ])

@@ -31,31 +31,49 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
 - In a cloud session the app gives mods no drawing surface. `/workplace` then says so in one line.
 
+## The rooms
+
+| Room | What happens there |
+| --- | --- |
+| Boardroom | Orchestration. Zorya briefs the crew on each prompt, then stays at the wall screen, which shows the turn's KPIs: tokens in and out, tool calls (failed, running), plan progress, turn time and model requests. Each running subagent sits at the table in its model's colour, with a thought bubble while its request is open. The tank right of the screen is the main loop's context window: the input of its last request against the window the engine reports (green, amber over 60%, red over 85%); it drains in purple while Claude compacts the conversation. |
+| Open office | Execution. Qix, Brix, Vex, Lumi and Pip work side by side at the top desk. Each monitor shows that crew member's tokens this turn, and a desk lamp shows the model of the run that asked for the call in progress (gold Opus, blue Sonnet, green Haiku, pink Fable). |
+| Town hall | Shipping. Only a turn that ships goes here: a successful `git commit` or `git push`, a pull request created or merged, a release, a publish or a deploy. The crew demos the work and the pairs party. Any other turn ends at the desks with check marks. |
+| Reception, Lead office, Studio, IT lab, Kitchen, Lounge | Supporting rooms with working cousins (NPCs). The crew takes breaks in the kitchen and lounge when idle; the IT lab racks light up with the compute. |
+
+**More agents than places.** Overflow is counted, never dropped. The boardroom seats 8 subagents; the next 6 stand along the walls; any more are counted on a `+N` sign at the door (and in `crew_status`). A crew member with several calls at once shows the count on their monitor, and their desk lamp splits into one stripe per model. The IT lab racks light 23 runs and count the rest on the last unit. In text, the strip lists 4 running calls and the compute rows 8 runs, then `+N more`.
+
+Tokens come from the usage Claude Code reports when each model request finishes; they are never estimated mid-stream. Each request's tokens are split evenly across the crew whose tools it asked for (a Read and an Edit: half to Qix, half to Brix). A request that asks for no work (an answer, a plan, a hand-off) counts for Zorya. Totals are exact; the split per person is this attribution. Counts start again with each turn.
+
 ## What you see
 
 The pane has three parts. The office is the show. The two text parts are the record.
 
-- **Truth strip** (top of the pane): what runs now, as `● Kit (Build) · Edit · auth.ts · 0:04`. The raw tool and target stay next to the role, because a role is a guess for tools such as Bash. A call that needed your approval shows `? … · asked for your OK`. Claude Code reports when the dialog opens but not when you answer, so the mark records the ask and stays until the call ends. A failure stays as `✗ …` until the same target passes or the turn ends. More than four calls show as `+N more`. At the end of a turn the strip shows a receipt: `✓ Done in 1:12 · 4 reads, 2 edits, 1 test`.
-- **Compute rack** (under the room view): one machine per run. `main` is the main loop; each subagent gets its own row. A machine powers on at its first model request and shows model, effort, requests and time: `● main · opus 5.5 · high · 3 req · 0:41`. When the run ends it powers off and shows its tokens: `○ Explore · sonnet 5.5 · 18.2k in (12.0k cached) · 1.1k out · 0:22`. At most 8 rows, then `+N more`. The same machines light up as server racks in the IT lab, in the model's colour.
-- **Status line**: Claude Code's own status bar shows the current call or `Nova thinking` while a turn runs.
+- **Truth strip** (top of the pane): what runs now, as `● Brix (Build) · Edit · auth.ts · 0:04`. The raw tool and target stay next to the role, because a role is a guess for tools such as Bash. A call that needed your approval shows `? … · asked for your OK`. Claude Code reports when the dialog opens but not when you answer, so the mark records the ask and stays until the call ends. A failure stays as `✗ …` until the same target passes or the turn ends. More than four calls show as `+N more`. At the end of a turn the strip shows a receipt: `✓ Done in 1:12 · 4 reads, 2 edits, 1 test`.
+- **Model in the strip:** a running call shows its model when a subagent on another model asked for it: `● Qix (Research) · Grep · register · haiku 5.5 · 0:03`.
+- **KPI row** (under the strip's first line): `Tokens 18.5k in (92% cached) · 1.3k out · Calls 14 (1 failed) · Plan 2/5 · 9 req · 1:42`.
+- **Compute rack** (under the room view): one machine per run. `main` is the main loop; each subagent gets its own row. A machine powers on at its first model request and shows model, effort, requests, tokens so far and time: `● main · opus 5.5 · high · 3 req · 52.1k in · 1.2k out · 0:41`. When the run ends it powers off and shows its tokens: `○ Explore · sonnet 5.5 · 18.2k in (12.0k cached) · 1.1k out · 0:22`. The header adds the context window: `Compute · ⚡2 on · context 52% (104.0k of 200.0k)`. The next row is what the account spends, from Claude Code's own session figures: on a subscription, the plan windows and the session's tokens (`Plan · 5-hour 42% (resets in 1h 0m) · weekly 18% · 1.2M tokens this session`), never dollars, because a plan is not billed per token; with an API key, the session's cost (`API · $1.23 this session · 1.2M tokens this session`). At most 8 rows, then `+N more`. The same machines light up as server racks in the IT lab, in the model's colour.
+- **Status line**: Claude Code's own status bar shows the current call or `Zorya thinking` while a turn runs.
 
 ## What drives the crew
 
 | Event | In the office |
 | --- | --- |
-| You send a prompt | Reception logs it. The crew walks to the Boardroom and Nova briefs. The mission title is the first 60 characters of the prompt. |
+| You send a prompt | Reception logs it. The crew walks to the Boardroom and Zorya briefs. The mission title is the first 60 characters of the prompt. |
 | TodoWrite, TaskCreate, TaskUpdate, TaskList | Each item becomes a card on the Boardroom screen and the Open office kanban, as written. Cards are not assigned to a role: a guess from the text was often wrong. |
-| Read, Grep, Glob, WebSearch, WebFetch | Pax (Research) works in the Studio. |
-| Write or Edit on .css, .html, .tsx, .jsx, .svg | Iris (Design) works in the Studio. |
-| Any other Write or Edit | Kit (Build) works in the Open office. |
-| Bash with git diff, git log or a review command | Vale (Review) works in the Open office. |
-| Bash with tests, builds or linters | Dot (QA) works in the IT lab. A failing exit code shows a bug bubble and a Dot-to-Kit duet. |
-| Other Bash | Pax for read-only commands (ls, cat, grep), else Kit. |
-| Agent or Workflow launch | Nova hands off to the matching role in a duet. |
-| Other tools | Nova (Lead) works in the Lead office. |
-| The model thinks (no tool runs) | Nova stands at the board with a thought bubble. Nobody wanders off while a turn is open. |
+| Read, Grep, Glob, WebSearch, WebFetch | Qix (Research) works in the Open office. |
+| Write or Edit on .css, .html, .tsx, .jsx, .svg | Lumi (Design) works in the Open office. |
+| Any other Write or Edit | Brix (Build) works in the Open office. |
+| Bash with git diff, git log or a review command | Vex (Review) works in the Open office. |
+| Bash with tests, builds or linters | Pip (QA) works in the Open office. A failing exit code shows a bug bubble and a Pip-to-Brix duet. |
+| Other Bash | Qix for read-only commands (ls, cat, grep), else Brix. |
+| Agent or Workflow launch | Zorya hands off to the matching role in a duet. |
+| Other tools | Zorya (Lead) works at the boardroom screen. |
+| A subagent's model request | The subagent sits at the boardroom table, thinking; its tokens join the KPIs. |
+| The model thinks (no tool runs) | Zorya stands at the board with a thought bubble. Nobody wanders off while a turn is open. |
 | A permission dialog shows | The crew member shows a `?` bubble, and the strip marks the call `asked for your OK`. Not when a settings hook answers the request itself. |
-| The turn ends | The crew goes straight to the Town hall, Nova demos, then the pairs party. |
+| The turn ends after a ship (commit, push, pull request, release, publish, deploy) | The crew goes straight to the Town hall, Zorya demos, then the pairs party. |
+| The turn ends without a ship | The crew stays at the desks with check marks; the boardroom keeps the turn's KPIs. |
+| Claude compacts the conversation | Zorya holds her notes and the context tank drains. |
 | 60 seconds with nothing running | The crew goes idle: desks, coffee, lounge. The pane redraws at a quarter of the frame rate. |
 
 Walks are short (the crew pops through the nearest door) so the office never lags behind the work.
@@ -71,7 +89,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | Frames per second of the office animation, 2 to 10. In a terminal this is also how often the pane redraws. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
-| `toolChips` | false | Adds one line under each tool call in the transcript, such as `Kit · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
+| `toolChips` | false | Adds one line under each tool call in the transcript, such as `Brix · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works
 

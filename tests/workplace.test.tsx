@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { bashLabel, classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
+import { bashLabel, classifyBash, classifyText, isShipCommand, routeTool } from '../hooks/classify.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -33,6 +33,9 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('classic.PreCompact', () => ({}))
+  on('classic.PostCompact', () => ({}))
   on('ui.status', () => ({ value: undefined }))
   if (surfaces) on('session.surfaces', () => ({ value: surfaces as never }))
   on('classic.PermissionRequest', () => (perm.decision ? { decision: perm.decision } : {}) as never)
@@ -46,12 +49,12 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   })
   on('agent.list', () => ({ value: [{ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' }] }))
   // A model request that streams one chunk, then waits until the test lets it finish.
-  const step = { release: (): void => {} }
+  const step = { release: (): void => {}, usage: null as unknown, toolUses: [] as unknown[] }
   on('turn.step', async function* (_, e) {
     const gate = new Promise<void>(r => { step.release = r })
     yield { kind: 'text', index: 0, text: '…' }
     await gate
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
   return { clock, panes, counts, hold, step, perm }
 }
@@ -122,14 +125,14 @@ test('2. a prompt starts the boardroom briefing', async ($, on) => {
   await w.clock.advance(250)
   let s = await crew($)
   expect(s).toContain('Phase: Briefing · "Build a Claude Code mod called "Digital Workplace" that d..."')
-  expect(line(s, 'Nova')).toMatch(/briefing|Presenting/i)
+  expect(line(s, 'Zorya')).toMatch(/briefing|Presenting/i)
   await w.clock.advance(2000) // fast pacing: the crew pops in, the briefing starts at once
   s = await crew($)
-  expect(s).toContain('Phase: Nova is briefing')
+  expect(s).toContain('Phase: Zorya is briefing')
   expect(s.split('\n').filter(l => / · Boardroom/.test(l)).length).toBeGreaterThanOrEqual(5)
   expect(s).toContain('View: Boardroom')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^Nova is briefing/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Zorya is briefing/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -144,13 +147,13 @@ test('2b. the mission title leaves out system-reminder blocks the app puts befor
   expect(s).not.toContain('system-reminder')
 })
 
-test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', async ($, on) => {
+test('3. Read, Edit and a test run put Qix, Brix and Pip to work within 1 s', async ($, on) => {
   const w = world(on)
   await start($)
   const cases = [
-    { call: { tool: 'Read', file_path: '/work/agent-boardroom.html' }, name: 'Pax', role: 'Research', room: 'Studio' },
-    { call: { tool: 'Edit', file_path: '/work/hooks/raster.ts', old_string: 'a', new_string: 'b' }, name: 'Kit', role: 'Build', room: 'Open office' },
-    { call: { tool: 'Bash', command: 'npm test' }, name: 'Dot', role: 'QA', room: 'IT lab' },
+    { call: { tool: 'Read', file_path: '/work/agent-boardroom.html' }, name: 'Qix', role: 'Research', room: 'Open office' },
+    { call: { tool: 'Edit', file_path: '/work/hooks/raster.ts', old_string: 'a', new_string: 'b' }, name: 'Brix', role: 'Build', room: 'Open office' },
+    { call: { tool: 'Bash', command: 'npm test' }, name: 'Pip', role: 'QA', room: 'Open office' },
   ] as const
   for (const c of cases) {
     const t0 = performance.now()
@@ -169,14 +172,14 @@ test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', asy
     expect(line(s, c.name)).toContain(` · ${c.room}`)
     say(`${c.call.tool}: hook path ${hookMs.toFixed(1)} ms (test kit included); ${line(s, c.name)}`)
   }
-  // Iris takes UI files
+  // Lumi takes UI files
   await $.tool.call({ tool: 'Write', file_path: '/work/pane.css', content: 'a{}' })
   await w.clock.advance(125)
-  expect(line(await crew($), 'Iris')).toMatch(/Heading to the studio|Write/)
-  // Vale takes git diff
+  expect(line(await crew($), 'Lumi')).toMatch(/Heading to the open office|Write/)
+  // Vex takes git diff
   await $.tool.call({ tool: 'Bash', command: 'git diff --stat' })
   await w.clock.advance(125)
-  expect(line(await crew($), 'Vale')).toMatch(/Heading to the open office|Bash/)
+  expect(line(await crew($), 'Vex')).toMatch(/Heading to the open office|Bash/)
 })
 
 test('3b. a long tool call shows its role, tool and a ticking elapsed time', async ($, on) => {
@@ -187,38 +190,40 @@ test('3b. a long tool call shows its role, tool and a ticking elapsed time', asy
   const pending = $.tool.call({ tool: 'Grep', pattern: 'register' } as never)
   await w.clock.advance(3000)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /^● Pax \(Research\) · Grep · register · 0:0[23]$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^● Qix \(Research\) · Grep · register · 0:0[23]$/ })).toBeDefined()
   await ui.unmount()
   release()
   await pending
 })
 
-test('4. a failing test shows the bug bubble and the Dot-to-Kit duet', async ($, on) => {
+test('4. a failing test shows the bug bubble and the Pip-to-Brix duet', async ($, on) => {
   const w = world(on)
   await start($)
   const r = await $.tool.call({ tool: 'Bash', command: 'npm test -- --fail' } as never)
   expect(r.isError).toBe(true) // the failure reaches Claude unchanged
   await w.clock.advance(125)
   let s = await crew($)
-  expect(line(s, 'Dot')).toContain('bubble bug')
+  expect(line(s, 'Pip')).toContain('bubble bug')
   let duet = ''
   for (let i = 0; i < 40 && !duet; i++) {
     await w.clock.advance(250)
     s = await crew($)
-    if (/duet dot->kit \(rework\)/.test(line(s, 'Dot'))) duet = line(s, 'Dot')
+    if (/duet dot->kit \(rework\)/.test(line(s, 'Pip'))) duet = line(s, 'Pip')
   }
   say('duet:', duet)
   expect(duet).toMatch(/duet dot->kit \(rework\)/)
-  expect(line(s, 'Kit')).toMatch(/Receiving from Dot/)
+  expect(line(s, 'Brix')).toMatch(/Receiving from Pip/)
 })
 
-test('5. the end of the turn plays the town hall demo, then the party', async ($, on) => {
+test('5. a turn that ships (here a git commit) ends with the town hall demo, then the party', async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Ship it'))
   await w.clock.advance(1000)
   await $.tool.call({ tool: 'Edit', file_path: '/work/a.ts', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Bash', command: 'git -C /work commit -am "Ship it"' })
   await w.clock.advance(1000)
+  expect(await crew($)).toMatch(/Brix shipped: Bash git commit -am/)
   await $.turn.complete(turnDone as never)
   // The briefing that the prompt started finishes first, then the crew heads out.
   let s = ''
@@ -227,7 +232,7 @@ test('5. the end of the turn plays the town hall demo, then the party', async ($
   for (let i = 0; i < 120 && !/Phase: Live demo/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
   expect(s).toContain('Phase: Live demo at the town hall')
   expect(s).toContain('View: Town hall')
-  expect(line(s, 'Nova')).toMatch(/Demoing on stage/)
+  expect(line(s, 'Zorya')).toMatch(/Demoing on stage/)
   for (let i = 0; i < 60 && !/Phase: Shipped · town hall party/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
   expect(s).toContain('Phase: Shipped · town hall party')
   await w.clock.advance(3000)
@@ -334,9 +339,9 @@ test('an aborted tool call never leaves a crew member stuck at work', async ($, 
   try { await $.tool.call({ tool: 'Glob', pattern: '**/*.ts' } as never) } catch { rejected = true }
   await w.clock.advance(8000)
   const s = await crew($)
-  say(`aborted Glob (call ${rejected ? 'rejected' : 'resolved'}): ${line(s, 'Pax')}`)
-  expect(line(s, 'Pax')).not.toMatch(/Glob ·|Heading to/)
-  expect(s).toContain('Status: ○ Pax (Research) · Glob')
+  say(`aborted Glob (call ${rejected ? 'rejected' : 'resolved'}): ${line(s, 'Qix')}`)
+  expect(line(s, 'Qix')).not.toMatch(/Glob ·|Heading to/)
+  expect(s).toContain('Status: ○ Qix (Research) · Glob')
 })
 
 test('plans become cards, shown as written and unassigned', async ($, on) => {
@@ -363,13 +368,13 @@ test('plans become cards, shown as written and unassigned', async ($, on) => {
   expect(await crew($)).toContain('[done] Write the release report -> none')
 })
 
-test('sub-agent launch plays a hand-off duet from Nova', async ($, on) => {
+test('sub-agent launch plays a hand-off duet from Zorya', async ($, on) => {
   const w = world(on)
   await start($)
   await $.tool.call({ tool: 'Agent', description: 'Explore hooks API', prompt: 'Find the hooks', subagent_type: 'Explore' } as never)
   let s = ''
   for (let i = 0; i < 80 && !/duet nova->pax \(handoff\)/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
-  expect(line(s, 'Nova')).toMatch(/duet nova->pax \(handoff\)/)
+  expect(line(s, 'Zorya')).toMatch(/duet nova->pax \(handoff\)/)
 })
 
 test('room tabs, zoom, auto camera, follow and sound respond to presses', async ($, on) => {
@@ -412,6 +417,10 @@ test('classifier', () => {
   expect(bashLabel('$root = "C:/x"; npm test')).toBe('npm test')
   expect(bashLabel('cd app && npx vitest run')).toBe('npx vitest run')
   expect(bashLabel('ls -la')).toBe('ls -la')
+  // shipping: work that leaves the machine
+  for (const c of ['git commit -m x', 'git -C repo push -u origin main', 'gh pr create --fill', 'gh pr merge 3', 'gh api -X PUT repos/o/r/pulls/3/merge', 'npm publish', 'npm run deploy', 'wrangler deploy', 'cd app && git push']) expect(isShipCommand(c)).toBe(true)
+  for (const c of ['git status', 'git diff', 'git log', 'gh pr view 3', 'npm test', 'git commitish', 'echo git push']) expect(isShipCommand(c)).toBe(false)
+  expect(routeTool('mcp__github__create_pull_request', {}, 'mcp__digital-workplace__')).toMatchObject({ kind: 'work', isShip: true })
   expect(routeTool('Edit', { file_path: '/a/b/Pane.tsx' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'design', label: 'Pane.tsx', isCheck: false })
   expect(routeTool('Write', { file_path: '/a/main.go' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'build', label: 'main.go', isCheck: false })
   expect(routeTool('WebFetch', { url: 'https://example.com/x' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'research', label: 'example.com', isCheck: false })
@@ -442,7 +451,7 @@ test('the compute rack powers one machine per run and reports its tokens', async
   let s = await crew($)
   expect(s).toMatch(/● main · opus 5\.5 · high · 1 req · 0:0[12]/)
   expect(s).toContain('Compute · ⚡1 on')
-  expect(s).toMatch(/◌ Nova thinking/)
+  expect(s).toMatch(/◌ Zorya thinking/)
   await done()
   const sub = await stepOpen($, w, 'a1')
   await w.clock.advance(250)
@@ -468,8 +477,8 @@ test('a call that went to the person for approval is marked "asked for your OK"'
   await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'npm run hold-deploy' } } as never)
   await w.clock.advance(125)
   const s = await crew($)
-  expect(s).toMatch(/\? Kit \(Build\) · Bash · npm run hold-deploy · 0:0\d · asked for your OK/)
-  expect(line(s, 'Kit')).toMatch(/asked for your OK/)
+  expect(s).toMatch(/\? Brix \(Build\) · Bash · npm run hold-deploy · 0:0\d · asked for your OK/)
+  expect(line(s, 'Brix')).toMatch(/asked for your OK/)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /asked for your OK/ })).toBeDefined()
   await ui.unmount()
@@ -477,8 +486,8 @@ test('a call that went to the person for approval is marked "asked for your OK"'
   await call
   await w.clock.advance(125)
   const after = await crew($)
-  expect(after).not.toMatch(/\? Kit \(Build\).*asked for your OK/)
-  expect(line(after, 'Kit')).not.toMatch(/asked for your OK/)
+  expect(after).not.toMatch(/\? Brix \(Build\).*asked for your OK/)
+  expect(line(after, 'Brix')).not.toMatch(/asked for your OK/)
 })
 
 test('failures stay in the strip until the same target passes', async ($, on) => {
@@ -487,10 +496,10 @@ test('failures stay in the strip until the same target passes', async ($, on) =>
   await $.prompt.submit(prompt('Fix tests'))
   await $.tool.call({ tool: 'Bash', command: 'npm test -- fail' })
   await w.clock.advance(250)
-  expect(await crew($)).toMatch(/✗ Dot \(QA\) · Bash · npm test -- fail failed/)
+  expect(await crew($)).toMatch(/✗ Pip \(QA\) · Bash · npm test -- fail failed/)
   await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
   await w.clock.advance(250)
-  expect(await crew($)).toMatch(/✗ Dot \(QA\)/) // an unrelated success does not clear it
+  expect(await crew($)).toMatch(/✗ Pip \(QA\)/) // an unrelated success does not clear it
   await $.turn.complete(turnDone as never)
   await w.clock.advance(250)
   expect(await crew($)).toMatch(/✗ Done in 0:0\d · 1 read, 1 test · 1 failed/)
@@ -504,7 +513,7 @@ test('tool-row chips are off unless the setting turns them on', async ($, on) =>
   await $.tool.call({ tool: 'Read', file_path: '/a/notes.md', tool_use_id: 'req-1' } as never)
   await w.clock.advance(125)
   const ui = await $.ui.mount({ ...ROW('req-1'), surface: 'desktop' } as never)
-  expect(await ui.find({ type: 'Text', text: /Pax · Read/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Qix · Read/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -514,7 +523,7 @@ test('tool-row chips record each call when enabled', { options: { toolChips: tru
   await $.tool.call({ tool: 'Read', file_path: '/a/notes.md', tool_use_id: 'req-1' } as never)
   await w.clock.advance(125)
   const ui = await $.ui.mount({ ...ROW('req-1'), surface: 'desktop' } as never)
-  expect(await ui.find({ type: 'Text', text: /^Pax · Read notes\.md ✓ 0:00$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Qix · Read notes\.md ✓ 0:00$/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -545,10 +554,10 @@ test('the desktop pane plays a film and redraws only when something changes', as
   }
   expect(src).toContain('class="p"') // frames after the first, revealed on time by CSS
   expect(src).toMatch(/animation-delay:-?\d+\.\d{3}s/)
-  // A quiet second: a terminal would redraw 8 times; here only a new film or new text redraws.
+  // Two quieter seconds: a terminal would redraw 16 times; here only a new film or new text redraws.
   const before = w.counts.invalidate
-  await w.clock.advance(1000)
-  expect(w.counts.invalidate - before).toBeLessThanOrEqual(4)
+  await w.clock.advance(2000)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(8)
 })
 
 test('films keep working after a turn reports its usage (event data is frozen)', async ($, on) => {
@@ -562,7 +571,8 @@ test('films keep working after a turn reports its usage (event data is frozen)',
   await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 500, 60) } as never)
   await w.clock.advance(3000)
   const s = await crew($)
-  expect(s).not.toContain('Phase: Shipped') // the office has not been pushed into the future
+  expect(s).toContain('Phase: Done · ready for a task') // a turn without a ship ends at the desks
+  expect(s).not.toMatch(/Recent:[\s\S]*\d{2,}\.\ds ago/) // and nothing was pushed tens of seconds into the future
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('<svg')
   await ui.unmount()
@@ -580,4 +590,118 @@ test('a request a settings hook decides never reaches the person, so it is not m
   expect(await crew($)).not.toMatch(/asked for your OK/)
   w.hold.release()
   await call
+})
+
+test('each model request adds its tokens to the KPIs and to the crew whose tools it asked for', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fix it'))
+  await $.turn.start({ text: 'Fix it', turnId: 't1' } as never)
+  // request 1 asks for a Read and an Edit: Qix and Brix share its 10,001 tokens
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 1000, cache_read_input_tokens: 8000, cache_creation_input_tokens: 1, output_tokens: 1000 }
+  w.step.toolUses = [{ id: 'u1', name: 'Read', input: { file_path: '/a/x.ts' } }, { id: 'u2', name: 'Edit', input: { file_path: '/a/x.ts' } }]
+  await (await stepOpen($, w))()
+  // request 2 only answers: Zorya
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 500, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 300 }
+  w.step.toolUses = []
+  await (await stepOpen($, w))()
+  await $.tool.call({ tool: 'Bash', command: 'npm test -- fail' })
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toContain('Tokens 18.5k in (92% cached) · 1.3k out · Calls 1 (1 failed) · 2 req')
+  expect(line(s, 'Qix')).toContain('5.0k tokens') // 5,001: the odd token goes to the first
+  expect(line(s, 'Brix')).toContain('5.0k tokens')
+  expect(line(s, 'Zorya')).toContain('9.8k tokens')
+  expect(line(s, 'Pip')).not.toContain('tokens') // ran a test, but no request asked Pip for it here
+  // a new turn starts the counts again
+  await $.turn.complete(turnDone as never)
+  await $.turn.start({ text: 'Again', turnId: 't2' } as never)
+  expect(await crew($)).not.toMatch(/\d tokens/)
+})
+
+test('a turn that ships nothing ends at the desks: no town hall', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Look around'))
+  await $.tool.call({ tool: 'Read', file_path: '/work/a.ts' })
+  await $.tool.call({ tool: 'Bash', command: 'git push --dry-run -- fail' }) // a failed push ships nothing
+  await w.clock.advance(500)
+  await $.turn.complete(turnDone as never)
+  await w.clock.advance(3000)
+  const s = await crew($)
+  expect(s).toContain('Nothing shipped, so the crew stays at their desks')
+  expect(s).not.toMatch(/Phase: (Off to the town hall|Live demo|Shipped)/)
+  expect(s.split('\n').filter(l => / · Town hall/.test(l)).length).toBe(0)
+  expect(s).toMatch(/✗ Done in 0:0\d/)
+})
+
+test('a call from a subagent on another model shows that model in the strip', async ($, on) => {
+  let release: () => void = () => {}
+  on('tool.call', { tool: 'Grep' }, () => new Promise(r => { release = () => r({ result: { matches: 0 } }) }))
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Explore'))
+  await $.turn.start({ text: 'Explore', turnId: 't1' } as never)
+  const main = await stepOpen($, w)
+  await main()
+  const it = $.turn.step({ turnId: 't1', index: 0, model: 'claude-haiku-5-5', messageCount: 2, agentId: 'a1' })[Symbol.asyncIterator]()
+  await it.next()
+  const pending = $.tool.call({ tool: 'Grep', pattern: 'register', agentId: 'a1' } as never)
+  const mainCall = $.tool.call({ tool: 'Bash', command: 'npm run hold-x' })
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toMatch(/● Qix \(Research\) · Grep · register · haiku 5\.5 · 0:00/)
+  expect(s).toMatch(/● Brix \(Build\) · Bash · npm run hold-x · 0:00/) // the main loop's own model is left out
+  release(); w.hold.release(); w.step.release()
+  await pending; await mainCall; await it.next()
+})
+
+test('the boardroom context tank follows the main loop and drains during compaction', async ($, on) => {
+  const w = world(on)
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [], cost: { usd: 0 } } as never }))
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.turn.start({ text: 'Work', turnId: 't1' } as never)
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 2000, cache_read_input_tokens: 100000, cache_creation_input_tokens: 2000, output_tokens: 500 }
+  await (await stepOpen($, w))()
+  expect(await crew($)).toContain('context 52% (104.0k of 200.0k)')
+  await $.classic.PreCompact({ trigger: 'auto', custom_instructions: null } as never)
+  let s = await crew($)
+  expect(s).toContain('context: compacting')
+  expect(s).toContain('Claude is compacting the conversation (context full)')
+  await $.classic.PostCompact({ trigger: 'auto', compact_summary: 'x' } as never)
+  s = await crew($)
+  expect(s).not.toContain('compacting…')
+  expect(s).not.toMatch(/context \d+%/) // unknown until the next response
+})
+
+test('more subagents than boardroom seats stand, then are counted at the door', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fan out'))
+  await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
+  for (let i = 1; i <= 10; i++) await (await stepOpen($, w, `a${i}`))()
+  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 2 standing')
+  for (let i = 11; i <= 17; i++) await (await stepOpen($, w, `a${i}`))()
+  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 6 standing, +3 counted at the door')
+  expect(await crew($)).toContain('+9 more machines') // the text rows count every run too
+})
+
+test('a subscription sees its plan windows, never dollars; an API key sees dollars', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.turn.start({ text: 'Work', turnId: 't1' } as never)
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 1000, cache_read_input_tokens: 20000, cache_creation_input_tokens: 0, output_tokens: 500 }
+  await (await stepOpen($, w))()
+  await w.clock.advance(125)
+  const now = w.clock.now() // the mod read the same clock on its last tick
+  const limits = [{ kind: 'five_hour', percentUsed: 42, resetsAt: new Date(now + 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 18 }]
+  await $.session.measure({ context: { window: 200000 }, rateLimits: limits, cost: { usd: 3.21 }, changed: ['rateLimits', 'cost'] } as never)
+  let s = await crew($)
+  expect(s).toContain('Plan · 5-hour 42% (resets in 1h 0m) · weekly 18% · 21.5k tokens this session')
+  expect(s).not.toContain('$3.21') // a plan is not billed per token
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.234 }, changed: ['rateLimits', 'cost'] } as never)
+  s = await crew($)
+  expect(s).toContain('API · $1.23 this session · 21.5k tokens this session')
 })

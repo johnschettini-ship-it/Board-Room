@@ -33,7 +33,7 @@ function cleanTitle(text) {
   return t.length > 60 ? t.slice(0, 57).trimEnd() + '...' : t;
 }
 function newMission(title) {
-  return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false };
+  return { id: ++missionSeq, title, phase: 'execute', phaseT: simT, startT: simT, cardsShown: 0, finishedAt: null, duets: 0, pairCounts: new Map(), tasks: [], wrapPending: false, ships: [] };
 }
 function ensureMission() { if (!mission) mission = newMission('Current work'); return mission; }
 
@@ -71,7 +71,11 @@ function startMission(text) {
   touch(null); focus = null; directorDwell = 99;
 }
 function turnStart() {
-  if (!turnOpen) { turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k); }
+  if (!turnOpen) {
+    turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k);
+    for (const k in turnTok) turnTok[k] = 0;
+    for (const k in roleTok) roleTok[k] = 0;
+  }
   turnOpen = true; turnT0 = simT; turnEndT = null; turnReason = null; lastEventT = simT;
 }
 function joinHall(a) {
@@ -89,8 +93,8 @@ function setPhase(p) {
   const m = mission; m.phase = p; m.phaseT = simT;
   if (p === 'present') {
     setBubble(agentByRole.lead, 'star', 2.5);
-    log(`Nova is briefing the crew on "${m.title}".`, 'lead');
-    announce('Nova is briefing the crew.');
+    log(`Zorya is briefing the crew on "${m.title}".`, 'lead');
+    announce('Zorya is briefing the crew.');
   } else if (p === 'execute') {
     for (const a of agents) if (a.state === 'meeting') { a.state = 'idle'; a.idleT = 0; }
   } else if (p === 'wrap') {
@@ -106,7 +110,7 @@ function setPhase(p) {
     }
   } else if (p === 'demo') {
     setBubble(agentByRole.lead, 'star', 2.5); hall.applauseUntil = visT + 2;
-    log(`Nova demoed "${m.title}" at the town hall.`, 'lead');
+    log(`Zorya demoed "${m.title}" at the town hall.`, 'lead');
     announce('Demo started at the town hall.');
     sfx('clap');
   } else if (p === 'party') {
@@ -140,7 +144,7 @@ function phaseUpdate(dt) {
   if ((m.phase === 'huddle' || m.phase === 'present') && simT - lastEventT > IDLE_AFTER) setPhase('execute');
 }
 function thinkTick() {
-  // Long thinking is work: Nova keeps a thought bubble up and nobody wanders.
+  // Long thinking is work: Zorya keeps a thought bubble up and nobody wanders.
   if (!isThinking()) { thinkT0 = null; return; }
   if (thinkT0 === null) thinkT0 = simT;
   const nova = agentByRole.lead;
@@ -210,9 +214,11 @@ function updateAgent(a, dt) {
 }
 
 // ---- events from the hooks ----
-function toolStart(id, role, tool, label) {
+function toolStart(id, role, tool, label, extra) {
   const a = agentByRole[role] || agentByRole.lead;
-  const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false };
+  // The run that asked for the call (main loop or a subagent) and so its model.
+  const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
+  const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
   acts.set(id, act);
   if (!turnOpen) turnStart();
   // The first real work ends the briefing: the crew goes to its desks.
@@ -233,7 +239,12 @@ function toolEnd(id, ok) {
   if (a.runCount === 0) a.workUntil = simT + LINGER;
   // A failure stays on the strip until the same work later succeeds or the turn ends.
   if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
-  turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT });
+  turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+  if (act.ship && act.ok) {
+    ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
+    setBubble(a, 'star', 2);
+    log(`${a.name} shipped: ${act.tool}${act.label ? ' ' + act.label : ''}. The town hall gets ready.`, a.role);
+  }
   if (turnCalls.length > 400) turnCalls.shift();
   lastEnded = act; touch(null);
 }
@@ -279,7 +290,16 @@ function turnEnd(reason) {
   const m = ensureMission();
   if (m.phase === 'wrap' || m.phase === 'demo' || m.phase === 'party') return;
   if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
-  setPhase('wrap');
+  // The town hall is for work that left the machine (a commit, a push, a pull
+  // request, a release, a deploy). Any other turn ends at the desks.
+  if (m.ships.length) { setPhase('wrap'); return; }
+  m.finishedAt = simT - m.startT;
+  const worked = new Set(turnCalls.map(c => c.role));
+  for (const a of agents) if (worked.has(a.role) || a.role === 'lead') setBubble(a, 'check', 1.6);
+  log('The turn is done. Nothing shipped, so the crew stays at their desks.', 'lead');
+  announce('Turn done.');
+  sfx('done');
+  setPhase('done');
 }
 function setCards(list) {
   // Plan items are shown verbatim and unassigned: a plan item has no role.
@@ -289,7 +309,57 @@ function setCards(list) {
     return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
   });
   if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
-  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Nova put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); }
+  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); }
+  touch(null);
+}
+
+// ---- tokens: summed from each model request's usage as it finishes ----
+// Never estimated mid-stream. roleTok splits each request's tokens evenly
+// across the crew whose tools that request asked for (Read -> Qix, Edit ->
+// Brix, ...); a request that asks for no work (an answer, a plan, a hand-off)
+// counts for Zorya. Totals are exact; the split per person is an attribution.
+const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
+const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
+// The whole session's tokens (never reset): what a subscription spends from its plan.
+const sessTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
+function stepDone(key, usage, roles) {
+  if (!usage) return;
+  const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
+  const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
+  for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) { turnTok[k] += u[k]; sessTok[k] += u[k]; }
+  const total = u.input + u.cacheRead + u.cacheCreate + u.output;
+  const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
+  const share = Math.floor(total / list.length);
+  let rest = total - share * list.length;
+  for (const r of list) { roleTok[r] += share + (rest > 0 ? 1 : 0); if (rest > 0) rest--; }
+  if (key === 'main' && !ctxInfo.compacting) ctxInfo.tokens = u.input + u.cacheRead + u.cacheCreate;
+  const m = machines.get(key);
+  if (m) {
+    const l = m.live || (m.live = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+    l.input_tokens += u.input; l.cache_read_input_tokens += u.cacheRead; l.cache_creation_input_tokens += u.cacheCreate; l.output_tokens += u.output;
+  }
+  touch(null);
+}
+
+// ---- context: how full the main loop's window is ----
+// tokens = the input side of the main loop's last request (uncached, cache
+// written and cache read), the status line's own measure; window from the
+// engine's session figures. Compaction empties it until the next response.
+const ctxInfo = { tokens: null, window: null, compacting: false };
+function setContext(c) {
+  if (!c) return;
+  if (Number.isFinite(+c.window) && +c.window > 0) ctxInfo.window = Math.round(+c.window);
+  if (Number.isFinite(+c.tokens) && +c.tokens >= 0 && !ctxInfo.compacting) ctxInfo.tokens = Math.round(+c.tokens);
+}
+function compactStart(trigger) {
+  ctxInfo.compacting = true;
+  setBubble(agentByRole.lead, 'note', 3);
+  log(`Claude is compacting the conversation (${trigger === 'manual' ? 'asked for' : 'context full'}).`, 'lead');
+  touch(agentByRole.lead);
+}
+function compactEnd() {
+  ctxInfo.compacting = false; ctxInfo.tokens = null;
+  log('Compaction done: the conversation was summarized.', 'lead');
   touch(null);
 }
 
@@ -298,22 +368,27 @@ function machineStep(key, model, effort) {
   let m = machines.get(key);
   if (!m) {
     if (key === 'main' && !turnOpen) turnStart();
-    m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size };
+    m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
+      // a subagent sits at the boardroom table while it runs, in its model's colour
+      look: key === 'main' ? null : makeLook(900 + machines.size, { color: modelColor(model), acc: null }) };
     machines.set(key, m);
     if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
     while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
   }
-  if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; }
+  if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
   if (model) m.model = String(model);
   if (effort != null) m.effort = String(effort);
-  m.requests++;
+  m.requests++; m.stepOpen++; turnTok.requests++; sessTok.requests++;
   if (key === 'main') mainStepOpen++;
   touch(null);
 }
-function machineStepEnd(key) { if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1); }
+function machineStepEnd(key) {
+  const m = machines.get(key); if (m) m.stepOpen = Math.max(0, m.stepOpen - 1);
+  if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1);
+}
 function machineDone(key, usage, durationMs) {
   const m = machines.get(key); if (!m) return;
-  m.on = false; m.endT = simT; m.usage = usage ? { ...usage } : m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
+  m.on = false; m.endT = simT; m.stepOpen = 0; m.usage = usage ? { ...usage } : m.live; m.durationMs = durationMs == null ? m.durationMs : durationMs;
   if (key === 'main') mainStepOpen = 0;
 }
 function machineInfo(key, info) {

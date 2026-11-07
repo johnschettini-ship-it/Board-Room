@@ -1,9 +1,9 @@
 // Maps Claude's tool calls and plan text to crew roles.
-//   Nova lead · Pax research · Iris design · Kit build · Vale review · Dot qa
+//   Zorya lead · Qix research · Lumi design · Brix build · Vex review · Pip qa
 import type { RoleId } from './types.ts'
 
 export type Route =
-  | { kind: 'work'; role: RoleId; label: string; isCheck: boolean }
+  | { kind: 'work'; role: RoleId; label: string; isCheck: boolean; isShip?: boolean }
   | { kind: 'launch'; role: RoleId; title: string }
   | { kind: 'ignore' }
 
@@ -44,6 +44,17 @@ export function bashLabel(command: string, n = 32): string {
     return clip(p, n)
   }
   return clip(command, n)
+}
+
+// Work leaving the machine: a commit, a push, a pull request created or
+// merged, a release, a publish or a deploy. Only these earn the town hall.
+const SHIP = /^(?:git\s+(?:commit|push)\b|gh\s+(?:pr\s+(?:create|merge)|release\s+create)\b|gh\s+api\b.*\/(?:merge|releases)\b|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:publish|deploy|release)\b|cargo\s+publish\b|(?:wrangler|fly|flyctl|firebase|vercel|netlify)\s+deploy\b)/i
+/** MCP tools that ship: a pull request created or merged, files pushed or committed, a release. */
+const SHIP_TOOL = /(?:create|merge)_pull_request|push_files|create_or_update_file|create_release/i
+
+/** True when a shell command ships work (see SHIP). */
+export function isShipCommand(command: string): boolean {
+  return command.split(/&&|\|\||;|\||\n/).some(seg => SHIP.test(program(seg)))
 }
 
 /** The role a shell command belongs to, and whether it is a test/build/lint run. */
@@ -117,10 +128,11 @@ export function routeTool(tool: string, input: Record<string, unknown>, self: st
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = String(input.command ?? '')
     const { role, isCheck } = classifyBash(cmd)
-    return { kind: 'work', role, label: bashLabel(cmd), isCheck }
+    return { kind: 'work', role, label: bashLabel(cmd), isCheck, isShip: isShipCommand(cmd) }
   }
   if (tool.startsWith('mcp__')) {
     const name = tool.split('__').slice(2).join('__')
+    if (SHIP_TOOL.test(name)) return { kind: 'work', role: 'build', label: clip(name, 28), isCheck: false, isShip: true }
     return { kind: 'work', role: /search|fetch|read|get|list|query|find|lookup|browse/i.test(name) ? 'research' : 'lead', label: clip(name, 28), isCheck: false }
   }
   return { kind: 'work', role: 'lead', label: '', isCheck: false }
