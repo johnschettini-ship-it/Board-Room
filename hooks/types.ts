@@ -12,6 +12,8 @@ export type OfficeOptions = {
   motion?: Motion
   zoom?: number
   onSfx?: (kind: Sfx) => void
+  /** How fast the crew walks: slow (0.6x), normal (the page's pace) or fast (1.6x). */
+  walkSpeed?: 'slow' | 'normal' | 'fast'
 }
 
 export type Frame = { width: number; height: number; base: Px; fx: Px | null }

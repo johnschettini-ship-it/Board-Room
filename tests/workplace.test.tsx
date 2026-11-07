@@ -118,22 +118,44 @@ test('1. the pane opens at start and shows the office within 2 s, on every surfa
   expect(w.counts.invalidate - before).toBeGreaterThanOrEqual(7)
 })
 
-test('2. a prompt starts the boardroom briefing', async ($, on) => {
+test('2. a message alone keeps the crew at their desks; Zorya thinks in the boardroom', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('What does the director do?'))
+  await w.clock.advance(1500)
+  const s = await crew($)
+  expect(s).toContain('Phase: Working · "What does the director do?"')
+  expect(s).toContain('Zorya is thinking it over')
+  expect(line(s, 'Zorya')).toContain(' · Boardroom')
+  for (const name of ['Qix', 'Lumi', 'Brix', 'Vex', 'Pip']) expect(line(s, name)).toContain(' · Open office')
+  expect(s).not.toMatch(/Walking to the briefing|In the briefing/)
+})
+
+test('2a. a plan gathers the crew in the boardroom and Zorya briefs, until the first tool runs', async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Build a Claude Code mod called "Digital Workplace" that docks my pixel-art office page as a side pane next to the chat.'))
+  await w.clock.advance(500)
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Read the page', status: 'in_progress', activeForm: 'Reading' }, { content: 'Port it', status: 'pending', activeForm: 'Porting' }] } as never)
   await w.clock.advance(250)
   let s = await crew($)
   expect(s).toContain('Phase: Briefing · "Build a Claude Code mod called "Digital Workplace" that d..."')
-  expect(line(s, 'Zorya')).toMatch(/briefing|Presenting/i)
-  await w.clock.advance(2000) // fast pacing: the crew pops in, the briefing starts at once
-  s = await crew($)
+  expect(s).toContain('The crew is heading to the boardroom for the briefing.')
+  // the crew pops in through the door and walks to the seats; the briefing starts once all sit
+  for (let i = 0; i < 24 && !/Phase: Zorya is briefing/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
   expect(s).toContain('Phase: Zorya is briefing')
   expect(s.split('\n').filter(l => / · Boardroom/.test(l)).length).toBeGreaterThanOrEqual(5)
   expect(s).toContain('View: Boardroom')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^Zorya is briefing/ })).toBeDefined()
   await ui.unmount()
+  // the first real tool call ends the briefing; a second plan in the same task does not gather again
+  await $.tool.call({ tool: 'Read', file_path: '/work/page.html' })
+  await w.clock.advance(250)
+  expect(await crew($)).toMatch(/Phase: Working/)
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Read the page', status: 'completed', activeForm: 'Reading' }, { content: 'Port it', status: 'in_progress', activeForm: 'Porting' }] } as never)
+  await w.clock.advance(250)
+  expect(await crew($)).not.toContain('Phase: Briefing')
 })
 
 test('2b. the mission title leaves out system-reminder blocks the app puts before the prompt', async ($, on) => {
@@ -142,7 +164,7 @@ test('2b. the mission title leaves out system-reminder blocks the app puts befor
   await $.prompt.submit(prompt('<system-reminder>\nfoo\n</system-reminder>\nhi'))
   await w.clock.advance(250)
   const s = await crew($)
-  expect(s).toContain('Phase: Briefing · "hi"')
+  expect(s).toContain('Phase: Working · "hi"')
   expect(s).toContain('Reception logged a new request: "hi".')
   expect(s).not.toContain('system-reminder')
 })
@@ -609,9 +631,10 @@ test('each model request adds its tokens to the KPIs and to the crew whose tools
   await w.clock.advance(250)
   const s = await crew($)
   expect(s).toContain('Tokens 18.5k in (92% cached) · 1.3k out · Calls 1 (1 failed) · 2 req')
-  expect(line(s, 'Qix')).toContain('5.0k tokens') // 5,001: the odd token goes to the first
-  expect(line(s, 'Brix')).toContain('5.0k tokens')
-  expect(line(s, 'Zorya')).toContain('9.8k tokens')
+  // per person: new tokens only (output, uncached input, cache writes); cache reads stay in the KPIs
+  expect(line(s, 'Qix')).toContain('1.0k new tokens') // 2,001 split: the odd token goes to the first
+  expect(line(s, 'Brix')).toContain('1.0k new tokens')
+  expect(line(s, 'Zorya')).toContain('800 new tokens')
   expect(line(s, 'Pip')).not.toContain('tokens') // ran a test, but no request asked Pip for it here
   // a new turn starts the counts again
   await $.turn.complete(turnDone as never)
