@@ -5,7 +5,9 @@
 // the town hall, and 60 seconds without events (and no open turn) lets the
 // crew wander. Ceremony never outruns the truth: cross-room walks pop through
 // the door, the first tool call ends the briefing, duets end with the turn.
-const RUSH = 1.8, LINGER = 2.5, MIN_WORK = 1.5, IDLE_AFTER = 60, MAX_MACHINES = 8;
+// Walk speed: the page's own pace (80 px/s) times the walkSpeed setting.
+const WALK = { slow: 0.6, normal: 1, fast: 1.6 }[opts.walkSpeed] || 1;
+const LINGER = 2.5, MIN_WORK = 1.5, IDLE_AFTER = 60, MAX_MACHINES = 8;
 let lastEventT = -Infinity, focus = null, focusT = -Infinity, lastEnded = null, lastAnnounce = '';
 let turnOpen = false, turnT0 = 0, turnEndT = null, turnReason = null, mainStepOpen = 0, thinkT0 = null;
 const acts = new Map(), logRing = [], turnCalls = [], machines = new Map();
@@ -55,16 +57,20 @@ function puff(x, y, color) { for (let i = 0; i < 8; i++) { const ang = i / 8 * M
 function startMission(text) {
   const title = cleanTitle(text);
   if (mission && mission.phase !== 'done' && mission.phase !== 'execute') log(`Stopped "${mission.title}" to start a new task.`, 'lead');
-  mission = newMission(title); mission.phase = 'huddle';
+  mission = newMission(title);
   turnStart();
-  const seats = shuffle(SEATS.slice()); let si = 0;
+  // A message alone is not a meeting: Zorya thinks it over in the boardroom and
+  // the crew stays at their desks (anyone away comes back). The crew gathers
+  // only when a plan goes up (see gatherBriefing), and a crew member gets up
+  // only when one of their tools runs.
   for (const a of agents) {
     a.danceUntil = 0; a.partyPair = null; a.pairTask = null;
-    if (a.duet || a.delivery || a.runCount > 0 || a.workUntil > simT) { a.arrived = true; continue; }
-    a.deliveries = []; a.state = 'meeting'; a.arrived = false; a.breakDone = 0; a.breakSpot = null;
-    popTo(a, a.role === 'lead' ? PRESENT_SPOT : seats[si++], () => { a.arrived = true; });
+    if (a.duet || a.delivery || a.runCount > 0 || a.workUntil > simT) continue;
+    a.breakDone = 0; a.breakSpot = null;
+    const st = STATIONS[a.role];
+    if (a.state === 'break' || a.state === 'meeting' || Math.hypot(a.x - st.x, a.y - st.y) > 6) { a.state = 'idle'; popTo(a, st); }
   }
-  log(`Reception logged a new request: "${title}". The crew is heading to the boardroom.`, 'lead');
+  log(`Reception logged a new request: "${title}". ${agentByRole.lead.name} is thinking it over.`, 'lead');
   setBubble(receptionist, 'star', 2.5); receptionist.waveUntil = visT + 1.6;
   announce(`New task started: ${title}`);
   sfx('start');
@@ -192,7 +198,7 @@ function updateAgent(a, dt) {
   if (a.duet) { if (a.duet.giver === a && simT >= a.duet.end) endDuet(a); return; }
   if (isDancing(a)) return;
   // Live events should show soon: walks to work and hand-offs rush, meetings hurry.
-  const pace = a.state === 'toWork' || a.state === 'delivering' ? RUSH : a.state === 'meeting' ? 1.6 : 1;
+  const pace = WALK;
   a.moving = stepMove(a, dt, SPEED * pace);
   const wants = a.workUntil > simT;
   switch (a.state) {
@@ -301,6 +307,21 @@ function turnEnd(reason) {
   sfx('done');
   setPhase('done');
 }
+// A plan went up: the crew not busy with a tool gathers in the boardroom and
+// Zorya briefs; the first real tool call ends it, as before. Once per task.
+function gatherBriefing() {
+  const m = mission;
+  if (!m || m.briefed || m.phase !== 'execute' || m.wrapPending) return;
+  m.briefed = true; setPhase('huddle');
+  const seats = shuffle(SEATS.slice()); let si = 0;
+  for (const a of agents) {
+    if (a.duet || a.delivery || a.runCount > 0) { a.arrived = true; continue; }
+    a.deliveries = []; a.state = 'meeting'; a.arrived = false; a.breakDone = 0; a.breakSpot = null;
+    popTo(a, a.role === 'lead' ? PRESENT_SPOT : seats[si++], () => { a.arrived = true; });
+  }
+  log('The crew is heading to the boardroom for the briefing.', 'lead');
+  directorDwell = 99;
+}
 function setCards(list) {
   // Plan items are shown verbatim and unassigned: a plan item has no role.
   const m = ensureMission(), old = new Map(m.tasks.map(t => [t.id, t])), had = m.tasks.length;
@@ -309,15 +330,17 @@ function setCards(list) {
     return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
   });
   if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
-  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); }
+  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); gatherBriefing(); }
   touch(null);
 }
 
 // ---- tokens: summed from each model request's usage as it finishes ----
-// Never estimated mid-stream. roleTok splits each request's tokens evenly
-// across the crew whose tools that request asked for (Read -> Qix, Edit ->
-// Brix, ...); a request that asks for no work (an answer, a plan, a hand-off)
-// counts for Zorya. Totals are exact; the split per person is an attribution.
+// Never estimated mid-stream. roleTok splits each request's NEW tokens
+// (output, uncached input, cache writes) evenly across the crew whose tools
+// that request asked for (Read -> Qix, Edit -> Brix, ...); a request that asks
+// for no work (an answer, a plan, a hand-off) counts for Zorya. Cache reads
+// are the same context re-read by every request, so they show only in the
+// turn totals (KPIs). Totals are exact; the split per person is an attribution.
 const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
 const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
 // The whole session's tokens (never reset): what a subscription spends from its plan.
@@ -327,7 +350,7 @@ function stepDone(key, usage, roles) {
   const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
   const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
   for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) { turnTok[k] += u[k]; sessTok[k] += u[k]; }
-  const total = u.input + u.cacheRead + u.cacheCreate + u.output;
+  const total = u.input + u.cacheCreate + u.output;
   const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
   const share = Math.floor(total / list.length);
   let rest = total - share * list.length;

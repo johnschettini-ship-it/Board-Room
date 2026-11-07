@@ -94,6 +94,7 @@ scenery = patch(scenery, block(find('scenery') + 272, find('scenery') + 291), pa
 sprites = section('sprite painting', 'movement')
 movement = section('movement', 'mission flow')
 
+movement = patch(movement, '  a.walkPhase += dt * 11;', '  a.walkPhase += dt * 7 * Math.min(1.6, spd / SPEED); // calmer legs that keep pace with the walk')
 flow_src = section('mission flow', 'particles')
 
 

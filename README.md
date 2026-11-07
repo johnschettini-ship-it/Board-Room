@@ -35,14 +35,14 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 | Room | What happens there |
 | --- | --- |
-| Boardroom | Orchestration. Zorya briefs the crew on each prompt, then stays at the wall screen, which shows the turn's KPIs: tokens in and out, tool calls (failed, running), plan progress, turn time and model requests. Each running subagent sits at the table in its model's colour, with a thought bubble while its request is open. The tank right of the screen is the main loop's context window: the input of its last request against the window the engine reports (green, amber over 60%, red over 85%); it drains in purple while Claude compacts the conversation. |
-| Open office | Execution. Qix, Brix, Vex, Lumi and Pip work side by side at the top desk. Each monitor shows that crew member's tokens this turn, and a desk lamp shows the model of the run that asked for the call in progress (gold Opus, blue Sonnet, green Haiku, pink Fable). |
+| Boardroom | Orchestration. Zorya thinks over each message here; the crew gathers for a briefing only when a plan goes up. Zorya then stays at the wall screen, which shows the turn's KPIs: tokens in and out, tool calls (failed, running), plan progress, turn time and model requests. Each running subagent sits at the table in its model's colour, with a thought bubble while its request is open. The tank right of the screen is the main loop's context window: the input of its last request against the window the engine reports (green, amber over 60%, red over 85%); it drains in purple while Claude compacts the conversation. |
+| Open office | Execution. Qix, Brix, Vex, Lumi and Pip work side by side at the top desk and stay there through a plain chat. Each monitor shows that crew member's new tokens this turn, and a desk lamp shows the model of the run that asked for the call in progress (gold Opus, blue Sonnet, green Haiku, pink Fable). |
 | Town hall | Shipping. Only a turn that ships goes here: a successful `git commit` or `git push`, a pull request created or merged, a release, a publish or a deploy. The crew demos the work and the pairs party. Any other turn ends at the desks with check marks. |
 | Reception, Lead office, Studio, IT lab, Kitchen, Lounge | Supporting rooms with working cousins (NPCs). The crew takes breaks in the kitchen and lounge when idle; the IT lab racks light up with the compute. |
 
 **More agents than places.** Overflow is counted, never dropped. The boardroom seats 8 subagents; the next 6 stand along the walls; any more are counted on a `+N` sign at the door (and in `crew_status`). A crew member with several calls at once shows the count on their monitor, and their desk lamp splits into one stripe per model. The IT lab racks light 23 runs and count the rest on the last unit. In text, the strip lists 4 running calls and the compute rows 8 runs, then `+N more`.
 
-Tokens come from the usage Claude Code reports when each model request finishes; they are never estimated mid-stream. Each request's tokens are split evenly across the crew whose tools it asked for (a Read and an Edit: half to Qix, half to Brix). A request that asks for no work (an answer, a plan, a hand-off) counts for Zorya. Totals are exact; the split per person is this attribution. Counts start again with each turn.
+Tokens come from the usage Claude Code reports when each model request finishes; they are never estimated mid-stream. Per person, the office counts **new tokens**: output, uncached input and cache writes. Cache reads (the same context, re-read by every request) appear only in the Boardroom KPIs, as `412K in (96% cached)`. Each request's new tokens are split evenly across the crew whose tools it asked for (a Read and an Edit: half to Qix, half to Brix). A request that asks for no work (an answer, a plan, a hand-off) counts for Zorya. Totals are exact; the split per person is this attribution. Counts start again with each turn.
 
 ## What you see
 
@@ -58,8 +58,8 @@ The pane has three parts. The office is the show. The two text parts are the rec
 
 | Event | In the office |
 | --- | --- |
-| You send a prompt | Reception logs it. The crew walks to the Boardroom and Zorya briefs. The mission title is the first 60 characters of the prompt. |
-| TodoWrite, TaskCreate, TaskUpdate, TaskList | Each item becomes a card on the Boardroom screen and the Open office kanban, as written. Cards are not assigned to a role: a guess from the text was often wrong. |
+| You send a prompt | Reception logs it and Zorya thinks it over in the Boardroom; the crew stays at their desks. The mission title is the first 60 characters of the prompt. |
+| TodoWrite, TaskCreate, TaskUpdate, TaskList | The first plan of a task gathers the crew in the Boardroom and Zorya briefs until the first tool runs. Each item becomes a card on the Boardroom screen and the Open office kanban, as written. Cards are not assigned to a role: a guess from the text was often wrong. |
 | Read, Grep, Glob, WebSearch, WebFetch | Qix (Research) works in the Open office. |
 | Write or Edit on .css, .html, .tsx, .jsx, .svg | Lumi (Design) works in the Open office. |
 | Any other Write or Edit | Brix (Build) works in the Open office. |
@@ -89,6 +89,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | Frames per second of the office animation, 2 to 10. In a terminal this is also how often the pane redraws. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
+| `walkSpeed` | normal | How fast the crew walks: `normal` is the office page's own pace, `slow` is calmer, `fast` hurries. |
 | `toolChips` | false | Adds one line under each tool call in the transcript, such as `Brix · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works

@@ -23,13 +23,13 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean }
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast' }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -77,6 +77,7 @@ function ensureOffice(): Office {
     office = createOffice({
       theme: themeFor(opts.theme),
       motion: opts.motion,
+      walkSpeed: opts.walkSpeed,
       zoom: 1,
       onSfx: kind => { if (soundOn && sfxQueue.length < 8) sfxQueue.push(kind) },
     })
@@ -565,7 +566,7 @@ function summary(o: Office): string {
   return [
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
-    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} tokens` : ''}`),
+    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
@@ -585,6 +586,7 @@ export const register: Register = (on, options) => {
     frameRate: typeof options.frameRate === 'number' ? options.frameRate : 8,
     terminalArt: options.terminalArt === 'blocks' || options.terminalArt === 'image' ? options.terminalArt : 'auto',
     toolChips: options.toolChips === true,
+    walkSpeed: options.walkSpeed === 'slow' || options.walkSpeed === 'fast' ? options.walkSpeed : 'normal',
   }
 
   on('session.start', async ($, e, next) => {
@@ -887,7 +889,7 @@ export const register: Register = (on, options) => {
                   <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
                 </Button>
                 <Text size="footnote" dimColor wrap="truncate-end">{c.status}</Text>
-                <Text size="caption" dimColor>{`${c.done} done${c.tokens ? ` · ${k(c.tokens)} tokens` : ''}`}</Text>
+                <Text size="caption" dimColor>{`${c.done} done${c.tokens ? ` · ${k(c.tokens)} new tokens` : ''}`}</Text>
               </Box>
             </Box>
           ))}
