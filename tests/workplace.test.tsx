@@ -110,6 +110,17 @@ test('2. a prompt starts the boardroom briefing', async ($, on) => {
   await ui.unmount()
 })
 
+test('2b. the mission title leaves out system-reminder blocks the app puts before the prompt', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('<system-reminder>\nfoo\n</system-reminder>\nhi'))
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toContain('Phase: Briefing · "hi"')
+  expect(s).toContain('Reception logged a new request: "hi".')
+  expect(s).not.toContain('system-reminder')
+})
+
 test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', async ($, on) => {
   const w = world(on)
   await start($)
