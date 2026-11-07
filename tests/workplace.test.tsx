@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
-import { classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
+import { bashLabel, classifyBash, classifyText, routeTool } from '../hooks/classify.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -407,6 +407,11 @@ test('classifier', () => {
   expect(classifyBash('git -c core.pager=cat --no-pager diff').role).toBe('review')
   expect(classifyBash('git -C repo status').role).toBe('research')
   expect(classifyBash('git -C repo commit -m x').role).toBe('build')
+  // the target is the program that runs, not a variable set before it
+  expect(bashLabel('S="C:/Users/x/AppData/Local/t"; cd "$S" && node run.js --sector 4')).toBe('node run.js --sector 4')
+  expect(bashLabel('$root = "C:/x"; npm test')).toBe('npm test')
+  expect(bashLabel('cd app && npx vitest run')).toBe('npx vitest run')
+  expect(bashLabel('ls -la')).toBe('ls -la')
   expect(routeTool('Edit', { file_path: '/a/b/Pane.tsx' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'design', label: 'Pane.tsx', isCheck: false })
   expect(routeTool('Write', { file_path: '/a/main.go' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'build', label: 'main.go', isCheck: false })
   expect(routeTool('WebFetch', { url: 'https://example.com/x' }, 'mcp__digital-workplace__')).toEqual({ kind: 'work', role: 'research', label: 'example.com', isCheck: false })

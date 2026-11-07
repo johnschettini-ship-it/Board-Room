@@ -33,6 +33,19 @@ function program(segment: string): string {
   }
 }
 
+/**
+ * What a shell command shows as its target: the first segment that runs a
+ * program, past variable assignments (`S="C:/…"`, `$s = …`) and `cd`/`echo`.
+ */
+export function bashLabel(command: string, n = 32): string {
+  for (const seg of command.split(/&&|\|\||;|\||\n/)) {
+    const p = program(seg)
+    if (!p || NEUTRAL.test(p) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(p) || /^\$[A-Za-z_][\w:]*\s*=/.test(p)) continue
+    return clip(p, n)
+  }
+  return clip(command, n)
+}
+
 /** The role a shell command belongs to, and whether it is a test/build/lint run. */
 export function classifyBash(command: string): { role: RoleId; isCheck: boolean } {
   let best = 0
@@ -104,7 +117,7 @@ export function routeTool(tool: string, input: Record<string, unknown>, self: st
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = String(input.command ?? '')
     const { role, isCheck } = classifyBash(cmd)
-    return { kind: 'work', role, label: clip(cmd, 32), isCheck }
+    return { kind: 'work', role, label: bashLabel(cmd), isCheck }
   }
   if (tool.startsWith('mcp__')) {
     const name = tool.split('__').slice(2).join('__')

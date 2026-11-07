@@ -81,3 +81,7 @@ Added during the build (2026-11-07):
   processes. So the mod marks a call "asked for your OK" (true before and after the answer) instead of
   "waiting for your OK" (false once approved).
 
+- The Claude desktop app's **local** Code session docks the pane beside the transcript → **VERIFIED
+  live** (person's screenshot, Windows, plugin 0.2.x from `main`): office, room tabs, zoom, Auto camera,
+  Sound, ticker, status line and crew cards all draw. The same screenshot showed a Bash target as
+  `S="C:/Users/…`, a variable assignment; targets now skip assignments and `cd`/`echo`.
