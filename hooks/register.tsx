@@ -140,7 +140,10 @@ function truthLines(o: Office): Line[] {
 }
 function machineLine(m: MachineInfo): Line {
   const indent = m.key === 'main' ? '' : '  '
-  const head = `${indent}${m.on ? '●' : '○'} ${m.name} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
+  // A subagent's row is named by its task (ten "general-purpose" rows tell nothing apart).
+  const label = m.key === 'main' ? 'main' : clipText(m.description || m.name, 34)
+  if (!m.seen) return { key: m.key, text: `${indent}● ${label} · running, model not seen yet · ${mmss(m.seconds)}`, dim: true }
+  const head = `${indent}${m.on ? '●' : '○'} ${label} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
   const u: Usage | null = m.usage
   if (m.on) return { key: m.key, text: `${head} · ${m.requests} req${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${k(u.output_tokens)} out` : ''} · ${mmss(m.seconds)}`, color: m.color }
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
@@ -180,6 +183,8 @@ function contextText(c: ContextInfo): string {
   if (c.tokens === null || !c.window) return ''
   return ` · context ${c.percent}% (${k(c.tokens)} of ${k(c.window)})`
 }
+const clipText = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
 function computeLines(o: Office): Line[] {
   const mi = o.machines(), ctx = contextText(o.context()), use = usageLine(o)
   if (!mi.list.length && !ctx && !use) return []
@@ -622,6 +627,13 @@ export const register: Register = (on, options) => {
         description: 'Digital Workplace: report what the office crew is doing right now (phase, who works on which tool, duets, plan cards). Read-only.',
         inputSchema: { type: 'object', properties: {} },
       })
+      // Subagents already running when the office opened (a restart mid-run).
+      try {
+        for (const a of await $.agent.list()) {
+          if (a.status === 'running' || a.status === 'waiting' || a.status === 'pending') ensureOffice().machineSeed(a.id, { type: a.type, description: a.description, parentId: a.parentId ?? null })
+          agentsAsked.add(a.id)
+        }
+      } catch { /* not offered here */ }
       // The window size (and the fill, if a response already came) for the context tank.
       try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }); setAccount(u as never) } catch { /* not offered here */ }
       if (!started) {
