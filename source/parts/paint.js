@@ -46,7 +46,14 @@ function drawLiveLine(x, y) {
 function drawCompute() {
   // The IT lab's racks are the compute view: one rack unit per run (main loop
   // first, then subagents), lit in its model's colour while it runs, dim after.
-  const list = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq)).slice(0, 24);
+  const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
+  // Past 24 runs the last unit counts the rest instead of showing one more.
+  const list = all.length > 24 ? all.slice(0, 23) : all;
+  if (all.length > 24) {
+    const X = x => 6 * RW + x, y = 24 + 7 * 6, s = `+${all.length - 23}`;
+    rect(ctx, X(198), y - 1, 28, 5, '#2b1d0e');
+    drawText(ctx, s, X(212) - (textW(s) >> 1), y - 1, Math.floor(visT * 2) % 2 ? '#f4b942' : '#c48a12');
+  }
   list.forEach((m, i) => {
     const rx = [124, 160, 196][Math.floor(i / 8)], y = 24 + (i % 8) * 6, X = x => 6 * RW + x, col = modelColor(m.model);
     rect(ctx, X(rx + 2), y - 1, 28, 5, m.on ? mix(col, '#1f2536', 0.72) : '#1f2536');

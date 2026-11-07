@@ -145,15 +145,44 @@ function machineLine(m: MachineInfo): Line {
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
   return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
 }
+// What the account spends: a subscription's plan windows (no dollars: the
+// plan is not billed per token), or an API key's dollars. From the engine's
+// session figures (session.usage at start, session.measure after each turn).
+type Limit = { kind: string; percentUsed: number; resetsAt?: string }
+let account: { limits: Limit[]; usd: number | null } = { limits: [], usd: null }
+let wallNow = 0
+const WINDOW_NAMES: Record<string, string> = { five_hour: '5-hour', seven_day: 'weekly', spend_limit: 'spend limit' }
+function untilText(iso?: string): string {
+  const ms = iso && wallNow ? Date.parse(iso) - wallNow : NaN
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60)
+  return ` (resets in ${d ? `${d}d ${h}h` : h ? `${h}h ${m % 60}m` : `${m}m`})`
+}
+function setAccount(u: { rateLimits?: readonly Limit[]; cost?: { usd: number } } | undefined): void {
+  if (!u) return
+  if (Array.isArray(u.rateLimits)) account = { ...account, limits: u.rateLimits.filter(l => Number.isFinite(l.percentUsed)).map(l => ({ kind: String(l.kind), percentUsed: l.percentUsed, resetsAt: l.resetsAt })) }
+  if (u.cost && Number.isFinite(u.cost.usd)) account = { ...account, usd: u.cost.usd }
+}
+function usageLine(o: Office): Line | null {
+  const kp = o.kpis(), tokens = kp.sessionTokens ? `${k(kp.sessionTokens)} tokens this session` : ''
+  if (account.limits.length) {
+    const parts = account.limits.map(l => `${WINDOW_NAMES[l.kind] ?? l.kind.replace(/_/g, ' ')} ${l.percentUsed}%${untilText(l.resetsAt)}`)
+    const spend = account.limits.some(l => l.kind === 'spend_limit') && account.usd !== null ? ` · $${account.usd.toFixed(2)}` : ''
+    const top = Math.max(...account.limits.map(l => l.percentUsed))
+    return { key: 'use', text: `Plan · ${parts.join(' · ')}${spend}${tokens ? ` · ${tokens}` : ''}`, color: top >= 95 ? '#ff6b6b' : top >= 80 ? '#f4b942' : undefined, dim: top < 80 }
+  }
+  if (account.usd !== null && account.usd > 0) return { key: 'use', text: `API · $${account.usd.toFixed(2)} this session${tokens ? ` · ${tokens}` : ''}`, dim: true }
+  return tokens ? { key: 'use', text: `Session · ${tokens}`, dim: true } : null
+}
 function contextText(c: ContextInfo): string {
   if (c.compacting) return ' · context: compacting…'
   if (c.tokens === null || !c.window) return ''
   return ` · context ${c.percent}% (${k(c.tokens)} of ${k(c.window)})`
 }
 function computeLines(o: Office): Line[] {
-  const mi = o.machines(), ctx = contextText(o.context())
-  if (!mi.list.length && !ctx) return []
-  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on${ctx}`, dim: true }, ...mi.list.map(machineLine)]
+  const mi = o.machines(), ctx = contextText(o.context()), use = usageLine(o)
+  if (!mi.list.length && !ctx && !use) return []
+  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on${ctx}`, dim: true }, ...(use ? [use] : []), ...mi.list.map(machineLine)]
   if (mi.more) out.push({ key: 'cm', text: `  +${mi.more} more machines`, dim: true })
   return out
 }
@@ -463,6 +492,7 @@ async function tick($: Engine): Promise<void> {
   busy = true
   try {
     const now = await $.clock.now()
+    wallNow = now
     const dt = lastTick ? (now - lastTick) / 1000 : 0
     lastTick = now
     const o = ensureOffice()
@@ -536,6 +566,7 @@ function summary(o: Office): string {
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} tokens` : ''}`),
+    ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
     'Strip:',
@@ -567,7 +598,7 @@ export const register: Register = (on, options) => {
         inputSchema: { type: 'object', properties: {} },
       })
       // The window size (and the fill, if a response already came) for the context tank.
-      try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }) } catch { /* not offered here */ }
+      try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }); setAccount(u as never) } catch { /* not offered here */ }
       if (!started) {
         started = true
         const ms = Math.round(1000 / frameRate())
@@ -691,6 +722,7 @@ export const register: Register = (on, options) => {
     try {
       const c = (e as { context?: { tokens?: number; window?: number } }).context
       if (c) ensureOffice().setContext({ tokens: c.tokens, window: c.window })
+      setAccount(e as never)
     } catch { /* never in the way */ }
     return next(e)
   }).catch(($, e, next) => next(e))

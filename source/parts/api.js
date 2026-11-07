@@ -94,6 +94,8 @@ function kpiInfo() {
     calls: turnCalls.length, failed: turnCalls.filter(x => !x.ok).length, running: acts.size,
     planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
     seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
+    sessionTokens: sessTok.input + sessTok.cacheRead + sessTok.cacheCreate + sessTok.output, sessionRequests: sessTok.requests,
+    boardroom: (({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
   };
 }
 function contextInfo() {

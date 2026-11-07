@@ -33,6 +33,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('session.measure', (_, e) => ({ changed: e.changed }))
   on('classic.PreCompact', () => ({}))
   on('classic.PostCompact', () => ({}))
   on('ui.status', () => ({ value: undefined }))
@@ -672,4 +673,35 @@ test('the boardroom context tank follows the main loop and drains during compact
   s = await crew($)
   expect(s).not.toContain('compacting…')
   expect(s).not.toMatch(/context \d+%/) // unknown until the next response
+})
+
+test('more subagents than boardroom seats stand, then are counted at the door', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fan out'))
+  await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
+  for (let i = 1; i <= 10; i++) await (await stepOpen($, w, `a${i}`))()
+  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 2 standing')
+  for (let i = 11; i <= 17; i++) await (await stepOpen($, w, `a${i}`))()
+  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 6 standing, +3 counted at the door')
+  expect(await crew($)).toContain('+9 more machines') // the text rows count every run too
+})
+
+test('a subscription sees its plan windows, never dollars; an API key sees dollars', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.turn.start({ text: 'Work', turnId: 't1' } as never)
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 1000, cache_read_input_tokens: 20000, cache_creation_input_tokens: 0, output_tokens: 500 }
+  await (await stepOpen($, w))()
+  await w.clock.advance(125)
+  const now = w.clock.now() // the mod read the same clock on its last tick
+  const limits = [{ kind: 'five_hour', percentUsed: 42, resetsAt: new Date(now + 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 18 }]
+  await $.session.measure({ context: { window: 200000 }, rateLimits: limits, cost: { usd: 3.21 }, changed: ['rateLimits', 'cost'] } as never)
+  let s = await crew($)
+  expect(s).toContain('Plan · 5-hour 42% (resets in 1h 0m) · weekly 18% · 21.5k tokens this session')
+  expect(s).not.toContain('$3.21') // a plan is not billed per token
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.234 }, changed: ['rateLimits', 'cost'] } as never)
+  s = await crew($)
+  expect(s).toContain('API · $1.23 this session · 21.5k tokens this session')
 })

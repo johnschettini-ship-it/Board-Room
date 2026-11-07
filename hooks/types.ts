@@ -75,6 +75,11 @@ export type Kpis = {
   planTotal: number
   seconds: number
   requests: number
+  /** The whole session's tokens and model requests. */
+  sessionTokens: number
+  sessionRequests: number
+  /** Running subagents in the boardroom: seated, standing, and counted at the door. */
+  boardroom: { seated: number; standing: number; more: number }
 }
 export type Usage = { model?: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 export type MachineInfo = {

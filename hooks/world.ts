@@ -1069,11 +1069,13 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // counts for Nova. Totals are exact; the split per person is an attribution.
   const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
   const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
+  // The whole session's tokens (never reset): what a subscription spends from its plan.
+  const sessTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
   function stepDone(key, usage, roles) {
     if (!usage) return;
     const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
     const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
-    for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) turnTok[k] += u[k];
+    for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) { turnTok[k] += u[k]; sessTok[k] += u[k]; }
     const total = u.input + u.cacheRead + u.cacheCreate + u.output;
     const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
     const share = Math.floor(total / list.length);
@@ -1125,7 +1127,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
     if (model) m.model = String(model);
     if (effort != null) m.effort = String(effort);
-    m.requests++; m.stepOpen++; turnTok.requests++;
+    m.requests++; m.stepOpen++; turnTok.requests++; sessTok.requests++;
     if (key === 'main') mainStepOpen++;
     touch(null);
   }
@@ -1536,7 +1538,14 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function drawCompute() {
     // The IT lab's racks are the compute view: one rack unit per run (main loop
     // first, then subagents), lit in its model's colour while it runs, dim after.
-    const list = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq)).slice(0, 24);
+    const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
+    // Past 24 runs the last unit counts the rest instead of showing one more.
+    const list = all.length > 24 ? all.slice(0, 23) : all;
+    if (all.length > 24) {
+      const X = x => 6 * RW + x, y = 24 + 7 * 6, s = `+${all.length - 23}`;
+      rect(ctx, X(198), y - 1, 28, 5, '#2b1d0e');
+      drawText(ctx, s, X(212) - (textW(s) >> 1), y - 1, Math.floor(visT * 2) % 2 ? '#f4b942' : '#c48a12');
+    }
     list.forEach((m, i) => {
       const rx = [124, 160, 196][Math.floor(i / 8)], y = 24 + (i % 8) * 6, X = x => 6 * RW + x, col = modelColor(m.model);
       rect(ctx, X(rx + 2), y - 1, 28, 5, m.on ? mix(col, '#1f2536', 0.72) : '#1f2536');
@@ -1616,14 +1625,25 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function drawDesks() {
     const t = visT;
     drawContextGauge();
+    drawRunOverflow();
     for (const role of ['research', 'build', 'review', 'design', 'qa']) {
       const st = STATIONS[role], sx = st.x - 7, col = ROLES[role].color, a = agentByRole[role];
       rect(ctx, sx, 42, 14, 8, '#0f2236');
       const tok = roleTok[role] || 0, busy = isWorking(a);
-      // The model of the run that asked for the call in progress, as a desk lamp.
-      if (busy && a.act && a.act.model) {
-        const mc = modelColor(a.act.model);
-        rect(ctx, st.x + 7, 55, 3, 3, mix(mc, '#000000', 0.45)); rect(ctx, st.x + 7, 55, 3, 2, mc);
+      // The model of each run that asked for a call in progress, as a desk lamp
+      // (one stripe per model, newest first); more than one call shows a count.
+      if (busy) {
+        const mine = [...acts.values()].filter(x => x.role === role).sort((p, q) => q.startT - p.startT);
+        const palette = [...new Set(mine.map(x => x.model).filter(Boolean))].slice(0, 3);
+        if (palette.length) {
+          rect(ctx, st.x + 7, 55, 3, 3, '#1a1e2e');
+          const w = Math.floor(3 / palette.length);
+          palette.forEach((md, i) => { const mc = modelColor(md); rect(ctx, st.x + 7 + i * w, 55, i === palette.length - 1 ? 3 - i * w : w, 2, mc); });
+        }
+        if (mine.length > 1) {
+          const s = mine.length > 9 ? '+' : String(mine.length);
+          rect(ctx, sx + 9, 40, 6, 7, '#f4b942'); drawText(ctx, s, sx + 10, 41, '#0b0f1a');
+        }
       }
       if (tok > 0) {
         const s = tokShort(tok);
@@ -1675,16 +1695,28 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   // The middle top seat is in front of Nova at the screen: it fills last.
   const RUN_SEATS = [0, 2, 3, 4, 5, 6, 7, 1];
-  /** Running subagents and their boardroom seats. */
-  function runSeats() {
+  // More subagents than seats stand along the walls; past that a sign at the
+  // door counts the rest. Overflow is counted, never dropped.
+  const STANDING = [at(3, 30, 56, 'down'), at(3, 46, 56, 'down'), at(3, 152, 52, 'down'), at(3, 168, 52, 'down'), at(3, 214, 82, 'left'), at(3, 26, 104, 'right')];
+  /** Running subagents: their boardroom seats or standing spots, and how many are left over. */
+  function runPlaces() {
+    const list = [...machines.values()].filter(m => m.on && m.key !== 'main' && m.look).sort((p, q) => p.seq - q.seq);
     const out = [];
-    for (const m of machines.values()) {
-      if (!m.on || m.key === 'main' || !m.look) continue;
-      if (out.length >= RUN_SEATS.length) break;
-      const s = SEATS[RUN_SEATS[out.length]];
-      out.push({ m, x: s.x, y: s.y, face: s.face });
+    for (const m of list) {
+      const i = out.length;
+      const s = i < RUN_SEATS.length ? SEATS[RUN_SEATS[i]] : STANDING[i - RUN_SEATS.length];
+      if (!s) break;
+      out.push({ m, x: s.x, y: s.y, face: s.face, standing: i >= RUN_SEATS.length });
     }
-    return out;
+    return { places: out, seated: Math.min(out.length, RUN_SEATS.length), standing: Math.max(0, out.length - RUN_SEATS.length), more: list.length - out.length };
+  }
+  const runSeats = () => runPlaces().places;
+  function drawRunOverflow() {
+    const more = runPlaces().more;
+    if (!more) return;
+    const s = `+${more}`, x = BOARD * RW + 132, w = textW(s) + 4;
+    rect(ctx, x, 131, w, 8, '#06080f'); rect(ctx, x + 1, 132, w - 2, 6, '#2b1d0e');
+    drawText(ctx, s, x + 2, 132, Math.floor(visT * 2) % 2 ? '#f4b942' : '#c48a12');
   }
   function drawRun(r) {
     const fx = Math.round(r.x), fy = Math.round(r.y), vb = visBeat() + r.m.seq * 0.37, bp = vb - Math.floor(vb);
@@ -1734,7 +1766,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function snapshotAll() {
     return {
-      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, ctxInfo, mission, focus, lastEnded, flickers, antennas]),
+      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, sessTok, ctxInfo, mission, focus, lastEnded, flickers, antennas]),
       v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
     };
   }
@@ -1878,6 +1910,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       calls: turnCalls.length, failed: turnCalls.filter(x => !x.ok).length, running: acts.size,
       planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
       seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
+      sessionTokens: sessTok.input + sessTok.cacheRead + sessTok.cacheCreate + sessTok.output, sessionRequests: sessTok.requests,
+      boardroom: (({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
     };
   }
   function contextInfo() {

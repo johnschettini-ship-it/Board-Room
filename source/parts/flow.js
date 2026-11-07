@@ -320,11 +320,13 @@ function setCards(list) {
 // counts for Nova. Totals are exact; the split per person is an attribution.
 const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
 const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
+// The whole session's tokens (never reset): what a subscription spends from its plan.
+const sessTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
 function stepDone(key, usage, roles) {
   if (!usage) return;
   const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
   const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
-  for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) turnTok[k] += u[k];
+  for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) { turnTok[k] += u[k]; sessTok[k] += u[k]; }
   const total = u.input + u.cacheRead + u.cacheCreate + u.output;
   const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
   const share = Math.floor(total / list.length);
@@ -376,7 +378,7 @@ function machineStep(key, model, effort) {
   if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
   if (model) m.model = String(model);
   if (effort != null) m.effort = String(effort);
-  m.requests++; m.stepOpen++; turnTok.requests++;
+  m.requests++; m.stepOpen++; turnTok.requests++; sessTok.requests++;
   if (key === 'main') mainStepOpen++;
   touch(null);
 }
