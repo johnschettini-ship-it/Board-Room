@@ -1548,19 +1548,21 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // live office does exactly what the film showed until a new event arrives.
   let filming = false;
   function saveGraph(roots) {
-    const saved = new Map();
-    const visit = v => {
-      if (v === null || typeof v !== 'object' || saved.has(v)) return;
-      if (Array.isArray(v)) { saved.set(v, v.slice()); for (const x of v) visit(x); return; }
-      if (v instanceof Map) { saved.set(v, [...v.entries()]); for (const [k, x] of v) { visit(k); visit(x); } return; }
-      if (v instanceof Set) { saved.set(v, [...v]); for (const x of v) visit(x); return; }
+    // Iterative, and each object is marked before its fields are visited:
+    // the graph has cycles (an agent and its duet point at each other).
+    const saved = new Map(), stack = [...roots];
+    while (stack.length) {
+      const v = stack.pop();
+      if (v === null || typeof v !== 'object' || saved.has(v)) continue;
+      if (Array.isArray(v)) { saved.set(v, v.slice()); for (const x of v) stack.push(x); continue; }
+      if (v instanceof Map) { saved.set(v, [...v.entries()]); for (const [k, x] of v) stack.push(k, x); continue; }
+      if (v instanceof Set) { saved.set(v, [...v]); for (const x of v) stack.push(x); continue; }
       const proto = Object.getPrototypeOf(v);
-      if (proto !== Object.prototype && proto !== null) return; // canvases and typed arrays are not simulation state
+      if (proto !== Object.prototype && proto !== null) continue; // canvases and typed arrays are not simulation state
       const copy = {};
-      for (const k of Object.keys(v)) { copy[k] = v[k]; visit(v[k]); }
       saved.set(v, copy);
-    };
-    for (const r of roots) visit(r);
+      for (const k of Object.keys(v)) { copy[k] = v[k]; stack.push(v[k]); }
+    }
     return saved;
   }
   function restoreGraph(saved) {
