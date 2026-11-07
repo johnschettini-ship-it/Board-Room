@@ -1,0 +1,17 @@
+{
+  "name": "board-room",
+  "owner": {
+    "name": "John Schettini",
+    "url": "https://github.com/johnschettini-ship-it"
+  },
+  "metadata": {
+    "description": "Digital Workplace: a pixel-art office pane for Claude Code whose crew acts out your session."
+  },
+  "plugins": [
+    {
+      "name": "digital-workplace",
+      "source": "./",
+      "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns."
+    }
+  ]
+}

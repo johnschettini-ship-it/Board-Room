@@ -1,0 +1,159 @@
+"""Builds hooks/world.ts from the page script.
+
+Art, crew, NPCs, town hall, path finding, sprites and rendering are copied
+verbatim from the page; only DOM, autoplay, playbooks and the scripted plan
+execution are replaced. Every patch must match exactly once, so a change in
+the source fails loudly instead of silently drifting.
+"""
+import re, sys
+
+SRC = sys.argv[1]  # path to agent-boardroom.html
+OUT = sys.argv[2]
+NEW = sys.argv[3]  # directory holding the hand-written parts
+
+lines = open(SRC, encoding='utf-8').read().split('\n')
+
+
+def block(a, b):
+    """1-based inclusive line range of the saved page."""
+    return '\n'.join(lines[a - 1:b])
+
+
+def find(marker):
+    for i, l in enumerate(lines):
+        if l.startswith('// ================= ' + marker):
+            return i + 1
+    raise SystemExit('marker not found: ' + marker)
+
+
+def section(marker, nxt):
+    return block(find(marker), find(nxt) - 1)
+
+
+def patch(text, old, new, count=1):
+    n = text.count(old)
+    if n != count:
+        raise SystemExit(f'patch expected {count} match(es), found {n}: {old[:70]!r}')
+    return text.replace(old, new)
+
+
+def part(name):
+    return open(f'{NEW}/{name}', encoding='utf-8').read().rstrip('\n')
+
+
+consts = section('constants', 'helpers')
+consts = patch(consts, "const AUTOPILOT_WAIT = 6;\n", '')
+consts = patch(consts, "const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);",
+               "let motion = opts.motion || 'auto', reduceMotion = motion === 'reduced';")
+
+helpers = section('helpers', '3x5 pixel font')
+helpers = patch(helpers, 'const rand = Math.random;', 'const rand = opts.random || Math.random;')
+helpers = patch(helpers, "function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d'); g.imageSmoothingEnabled = false; return [c, g]; }",
+                'function makeCanvas(w, h) { const c = new Px(w, h); return [c, c]; }')
+
+art = '\n\n'.join([
+    section('3x5 pixel font', '7x7 icons'),
+    section('7x7 icons', 'agents: one original alien'),
+    section('agents: one original alien', 'rooms and places'),
+    section('rooms and places', 'world variants'),
+    section('world variants', 'task playbooks'),
+    section('path grid', 'state'),
+])
+
+cousins = section('cousins:', 'scenery')
+
+scenery = section('scenery', 'sprite painting')
+# Lighting: same maths as the page (radial falloff, destination-out, 11-level
+# Bayer dither), computed straight into an alpha map instead of a canvas.
+scenery = patch(scenery, block(find('scenery') + 272, find('scenery') + 291), part('lights.js'))
+
+sprites = section('sprite painting', 'movement')
+movement = section('movement', 'mission flow')
+
+flow_src = section('mission flow', 'particles')
+
+
+def fn(src, name, end_marker):
+    """Cuts one top-level function (or const) out of the flow section."""
+    i = src.index(name)
+    j = src.index(end_marker, i)
+    return src[i:j]
+
+
+kept = []
+kept.append(fn(flow_src, 'function besideSpot(b)', 'function startDelivery'))
+kept.append(fn(flow_src, 'function startDelivery(a, d)', 'function deliverTick'))
+dt = fn(flow_src, 'function deliverTick(a)', 'function startDuet')
+dt = patch(dt, "if (!b.duet && b.state !== 'meeting') startDuet(a, b); else a.path = [];", 'if (!b.duet) startDuet(a, b); else a.path = [];')
+kept.append(dt)
+sd = fn(flow_src, 'function startDuet(a, b)', 'function endDuet')
+sd = patch(sd, "Sound.sfx(kind === 'rework' ? 'bug' : 'duet');", "sfx(kind === 'rework' ? 'bug' : 'duet');")
+kept.append(sd)
+ed = fn(flow_src, 'function endDuet(a)', 'function think')
+ed = patch(ed, 'log(del.kind === \'rework\' ? `${a.name} walked ${b.name} through the review notes.` : `${a.name} handed "${del.from.title}" to ${b.name}.`, a.role);',
+           'log(del.kind === \'rework\' ? `${a.name} walked ${b.name} through the ${del.from.title}.` : `${a.name} handed "${del.from.title}" to ${b.name}.`, a.role);')
+kept.append(ed)
+kept.append(fn(flow_src, 'const pairKey', 'function pairSpot'))
+
+particles = section('particles', 'simulation step')
+particles = patch(particles, "  if (mission && mission.phase === 'party' && !reduceMotion) {",
+                  "  if (mission && mission.phase === 'party' && !reduceMotion && motion !== 'reduced') {")
+
+rendering = section('rendering', 'sound (optional chiptune)')
+rendering = patch(rendering, "  const barTask = a.duet ? null : a.state === 'working' ? a.task : a.state === 'pairing' ? a.pairTask : null;\n  if (barTask) {\n    rect(ctx, cx - 7, top - 3, 14, 4, '#0b0f1a'); rect(ctx, cx - 6, top - 2, Math.max(1, Math.round(12 * barTask.progress)), 2, role.color); top -= 5;",
+                  "  const barProg = a.duet ? null : a.state === 'working' ? a.workProg : null;\n  if (barProg !== null) {\n    rect(ctx, cx - 7, top - 3, 14, 4, '#0b0f1a'); rect(ctx, cx - 6, top - 2, Math.max(1, Math.round(12 * barProg)), 2, role.color); top -= 5;")
+rendering = patch(rendering, "      const msg = autopilot ? 'NEXT TASK IN ' + Math.max(0, Math.ceil(AUTOPILOT_WAIT - tIn)) : 'READY FOR A TASK';\n      drawText(ctx, msg, x0 + 2, y0 + 22, fg);\n      if (!autopilot && Math.floor(visT * 2) % 2) rect(ctx, x0 + 3 + textW(msg) + 1, y0 + 22, 3, 5, fg);",
+                  "      const msg = 'READY FOR A TASK'; void tIn;\n      drawText(ctx, msg, x0 + 2, y0 + 22, fg);\n      if (Math.floor(visT * 2) % 2) rect(ctx, x0 + 3 + textW(msg) + 1, y0 + 22, 3, 5, fg);")
+rendering = patch(rendering, "      const shown = m.phase === 'present' ? m.cardsShown : m.tasks.length;\n      m.tasks.forEach((t, i) => { if (i < shown) drawChipPx(x0 + 4 + (i % 8) * 10, y0 + 10 + Math.floor(i / 8) * 7, t); });",
+                  "      const shown = m.phase === 'present' ? m.cardsShown : m.tasks.length;\n      m.tasks.forEach((t, i) => { if (i < shown && i < 16) drawChipPx(x0 + 4 + (i % 8) * 10, y0 + 10 + Math.floor(i / 8) * 7, t); });\n      if (!m.tasks.length) drawLiveLine(x0 + 2, y0 + 12);")
+rendering = patch(rendering, "  const done = m.tasks.filter(t => t.state === 'done').length, n = m.tasks.length;\n  if (m.phase === 'execute') {",
+                  "  const done = m.tasks.filter(t => t.state === 'done').length, n = Math.max(1, m.tasks.length);\n  if (m.phase === 'execute') {")
+rendering = patch(rendering, "  if (isWorking(iris)) { const w = Math.round(36 * iris.task.progress);",
+                  "  if (isWorking(iris)) { const w = Math.round(36 * iris.workProg);")
+# render(): split into paint(target, fx) so motion effects can ship as their own layer.
+r0 = rendering.index('function render() {')
+r1 = rendering.index('\n}', r0) + 2
+rendering = rendering[:r0] + part('paint.js') + rendering[r1:]
+rendering = patch(rendering, 'function drawParticles() {\n  for (const p of particles) {',
+                  'function drawParticles(fx) {\n  for (const p of particles) {\n    if (p.kind === \'confetti\' && !fx) continue;')
+
+cam_src = section('camera: 1 to 3 rooms in view', 'events')
+cam = cam_src[:cam_src.index('const roomEls = [];')]
+cam = patch(cam, 'let zoom = 1, VWc = RW;', 'let zoom = 1, VWc = RW, ctx = new Px(VWc, H), fxCtx = new Px(VWc, H), fxOut = new Px(VWc, H);')
+d0 = cam.index('function directorTick(dt) {')
+d1 = cam.index('function updateCamera(dt) {')
+cam = cam[:d0] + part('director.js') + '\n' + cam[d1:]
+cam = patch(cam, '  if (!paused) directorTick(dt);', '  directorTick(dt);')
+cam = patch(cam, "function setAutoCam(on) { autoCam = on; if (on) directorDwell = 99; els.cam.setAttribute('aria-pressed', String(on)); }",
+            'function setAutoCam(on) { autoCam = on; if (on) directorDwell = 99; }')
+s0 = cam.index('function setZoom(z) {')
+s1 = cam.index('\n}', s0) + 2
+cam = cam[:s0] + 'function setZoom(z) {\n  zoom = clamp(z, 1, 3); VWc = RW * zoom;\n  ctx = new Px(VWc, H); fxCtx = new Px(VWc, H); fxOut = new Px(VWc, H);\n  camX = clamp(camX, 0, W - VWc);\n}\n' + cam[s1:]
+cam = cam.replace(', drag = null, wheelAcc = 0, wheelLock = 0;', ', drag = null;')
+
+dom = section('DOM', 'camera: 1 to 3 rooms in view')
+pads = '\n'.join(l for l in dom.split('\n') if l.startswith('const pad =') or l.startswith('const clockLong') or l.startswith('const clockShort'))
+
+body = '\n\n'.join([
+    consts, helpers, art,
+    part('state.js'),
+    cousins, scenery, sprites, movement,
+    part('flow.js'),
+    '\n'.join(kept),
+    particles,
+    part('step.js'),
+    rendering,
+    pads,
+    cam,
+    part('api.js'),
+])
+
+for bad in ['document.', 'window.', 'els.', 'Sound.', 'autopilot', 'presetIdx', 'requestAnimationFrame', 'PLAYBOOK', 'GENERIC']:
+    hits = [l for l in body.split('\n') if bad in l]
+    if hits:
+        raise SystemExit(f'leftover {bad}: {hits[0][:120]}')
+
+header = part('header.txt')
+out = header + '\n' + '\n'.join('  ' + l if l else l for l in body.split('\n')) + '\n}\n'
+open(OUT, 'w', encoding='utf-8').write(out)
+print('wrote', OUT, len(out.split('\n')), 'lines')
