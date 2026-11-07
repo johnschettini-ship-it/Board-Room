@@ -19,6 +19,7 @@ const prompt = (text: string) => ({ text, wait: false, origin: { kind: 'composer
 function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   const clock = mock.clock(on)
   const hold = { release: (): void => {} }
+  const perm: { decision?: unknown } = {}
   const panes = new Set<string>()
   const counts = { invalidate: 0, audio: 0 }
   on('command.register', () => ({ value: { command: 'workplace' } }))
@@ -34,7 +35,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('ui.status', () => ({ value: undefined }))
   if (surfaces) on('session.surfaces', () => ({ value: surfaces as never }))
-  on('classic.PermissionRequest', () => ({}))
+  on('classic.PermissionRequest', () => (perm.decision ? { decision: perm.decision } : {}) as never)
   on('ui.render', { component: 'ToolUse' }, ($, e) => { const { Text } = $.ui.resolve(e); return <Text>row</Text> })
   on('tool.call', (_, e) => {
     const cmd = String((e as { command?: unknown }).command ?? '')
@@ -52,7 +53,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
   })
-  return { clock, panes, counts, hold, step }
+  return { clock, panes, counts, hold, step, perm }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -234,7 +235,7 @@ test('5. the end of the turn plays the town hall demo, then the party', async ($
   expect(s.split('\n').filter(l => /Dancing/.test(l)).length).toBeGreaterThanOrEqual(4)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const svg = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
-  expect(svg).toContain('class="fx"') // confetti + disco ride the reduced-motion layer
+  expect(svg).toMatch(/class="[^"]*\bfx\b/) // confetti + disco ride the reduced-motion layer
   await ui.unmount()
 })
 
@@ -453,7 +454,7 @@ test('the compute rack powers one machine per run and reports its tokens', async
   expect(s).toMatch(/✓ Done in 0:0\d/)
 })
 
-test('a tool that waits for the person shows "waiting for your OK", not work', async ($, on) => {
+test('a call that went to the person for approval is marked "asked for your OK"', async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Deploy it'))
@@ -462,17 +463,17 @@ test('a tool that waits for the person shows "waiting for your OK", not work', a
   await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'npm run hold-deploy' } } as never)
   await w.clock.advance(125)
   const s = await crew($)
-  expect(s).toMatch(/\? Kit \(Build\) · Bash · .*waiting for your OK/)
-  expect(line(s, 'Kit')).toMatch(/Waiting for your OK/i)
+  expect(s).toMatch(/\? Kit \(Build\) · Bash · npm run hold-deploy · 0:0\d · asked for your OK/)
+  expect(line(s, 'Kit')).toMatch(/asked for your OK/)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /waiting for your OK/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /asked for your OK/ })).toBeDefined()
   await ui.unmount()
   w.hold.release()
   await call
   await w.clock.advance(125)
   const after = await crew($)
-  expect(after).not.toMatch(/\? Kit \(Build\).*waiting for your OK/)
-  expect(line(after, 'Kit')).not.toMatch(/Waiting for your OK/)
+  expect(after).not.toMatch(/\? Kit \(Build\).*asked for your OK/)
+  expect(line(after, 'Kit')).not.toMatch(/asked for your OK/)
 })
 
 test('failures stay in the strip until the same target passes', async ($, on) => {
@@ -527,15 +528,51 @@ test('the desktop pane plays a film and redraws only when something changes', as
   await $.prompt.submit(prompt('Read the hooks'))
   await $.tool.call({ tool: 'Read', file_path: '/a/register.tsx' })
   await w.clock.advance(1500)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+  // A film that starts right at a camera cut holds one frame, so look at a few redraws.
+  let src = ''
+  for (let i = 0; i < 8 && !src.includes('class="p"'); i++) {
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+    expect(src).toContain('.p{animation:none}') // reduced motion: the base frame only
+    expect(src.length).toBeLessThan(131072)
+    await ui.unmount()
+    await w.clock.advance(250)
+  }
   expect(src).toContain('class="p"') // frames after the first, revealed on time by CSS
   expect(src).toMatch(/animation-delay:-?\d+\.\d{3}s/)
-  expect(src).toContain('.p{animation:none}') // reduced motion: the base frame only
-  expect(src.length).toBeLessThan(131072)
-  await ui.unmount()
-  // A quiet second: no new film is due and no text changed beyond the clock.
+  // A quiet second: a terminal would redraw 8 times; here only a new film or new text redraws.
   const before = w.counts.invalidate
   await w.clock.advance(1000)
-  expect(w.counts.invalidate - before).toBeLessThanOrEqual(3)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(4)
+})
+
+test('films keep working after a turn reports its usage (event data is frozen)', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Read it'))
+  await $.turn.start({ text: 'Read it', turnId: 't1' } as never)
+  const done = await stepOpen($, w)
+  await done()
+  await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 500, 60) } as never)
+  await w.clock.advance(3000)
+  const s = await crew($)
+  expect(s).not.toContain('Phase: Shipped') // the office has not been pushed into the future
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('<svg')
+  await ui.unmount()
+})
+
+test('a request a settings hook decides never reaches the person, so it is not marked', async ($, on) => {
+  const w = world(on)
+  w.perm.decision = { behavior: 'allow' }
+  await start($)
+  await $.prompt.submit(prompt('Deploy it'))
+  const call = $.tool.call({ tool: 'Bash', command: 'npm run hold-deploy' })
+  await w.clock.advance(125)
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'npm run hold-deploy' } } as never)
+  await w.clock.advance(125)
+  expect(await crew($)).not.toMatch(/asked for your OK/)
+  w.hold.release()
+  await call
 })

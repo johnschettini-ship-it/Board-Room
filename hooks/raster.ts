@@ -418,6 +418,8 @@ export function deflate(data: Uint8Array): Uint8Array {
     }
   }
   out.put(lc[256]!, ll[256]!)
+  // A rare huge input (a tall film atlas) must not pin its buffer for good.
+  if (symBuf.length > 1 << 22) symBuf = new Uint32Array(1 << 16)
   return out.flush()
 }
 
@@ -485,6 +487,7 @@ export function encodePNG(px: Uint8ClampedArray | Uint8Array, w: number, h: numb
     dv.setUint32(at + 2 + z.length, adler32(body))
   })
   chunk('IEND', 0, () => {})
+  if (rawBuf.length > 1 << 22) rawBuf = new Uint8Array(1 << 16)
   return out.subarray(0, p)
 }
 

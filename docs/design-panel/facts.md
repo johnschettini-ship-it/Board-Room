@@ -70,3 +70,14 @@ Still unverified:
   session's transcript (likely, since command replies do).
 - Whether the desktop app's **local** Code session places the pane (the person has not tried yet).
 - The mobile app's handling of animated Svg (web view) and of tool-row cards.
+
+Added during the build (2026-11-07):
+- Hook event data is frozen to every depth (`e` "frozen to every depth … throws") → **VERIFIED from the
+  API types and by a failing test**: storing `turn.complete`'s `usage` and later restoring it in place
+  threw. The film snapshot now skips frozen objects and the machine keeps a copy.
+- No event reports the person's answer to a permission dialog → **VERIFIED from the API types**: there
+  is `classic.PermissionRequest` (dialog about to show, or a settings hook decides) and
+  `classic.PermissionDenied`, but no granted event; `process.spawn` covers only a plugin's own
+  processes. So the mod marks a call "asked for your OK" (true before and after the answer) instead of
+  "waiting for your OK" (false once approved).
+

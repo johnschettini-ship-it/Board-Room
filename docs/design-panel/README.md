@@ -25,7 +25,7 @@ dialog is about to show.
 | S2, S3 truth strip | `hooks/register.tsx` `stripLines` | test 3b: `● Pax (Research) · Grep · register · 0:02` |
 | S4 failures stay | `flow.js` `toolEnd` marks a failure fixed only when the same role, tool and target pass | test "failures stay in the strip" |
 | S5 thinking, no wandering | `flow.js` `isThinking`, `idleMode` (idle only when nothing runs) | compute test (`◌ Nova thinking`); test 5b |
-| S6 waiting for your OK | `classic.PermissionRequest` → `markWaiting` | test "a tool that waits for the person" |
+| S6 approval shown, not "working" | `classic.PermissionRequest` → `markWaiting` when no settings hook decided; worded "asked for your OK" because the answer is not observable (facts.md) | two permission tests |
 | S7 compute view | `turn.step` / `turn.complete` → machines; text rows + IT-lab racks | compute test (tokens, cached, subagent row) |
 | S8 cloud | one-line `/workplace` reply when the engine reports no surface | test "no drawing surface" |
 | S9 terminals | strip above the block art; strip only below 40 columns or 14 rows | test 1 (terminal raster) |

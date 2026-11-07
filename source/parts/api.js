@@ -3,7 +3,7 @@ function select(id) { if (!id && selectedId) manualRoom = viewRoom(); selectedId
 function agentStatus(a) {
   if (a.duet) return a.duet.giver === a ? `Handing off to ${a.duet.taker.name}` : `Receiving from ${a.duet.giver.name}`;
   if (isDancing(a)) return 'Dancing';
-  if (a.runCount > 0 && a.act && a.act.waiting) return `Waiting for your OK · ${a.act.tool}`;
+  if (a.runCount > 0 && a.act && a.act.waiting) return `${a.act.tool}${a.act.label ? ' · ' + a.act.label : ''} · asked for your OK`;
   const m = mission;
   switch (a.state) {
     case 'working':
@@ -19,7 +19,6 @@ function agentStatus(a) {
 }
 function phaseText() {
   const m = mission;
-  if ([...acts.values()].some(x => x.waiting)) return 'Waiting for your OK';
   if (isThinking() && (!m || m.phase === 'execute')) return 'Thinking';
   if (!m) return idleMode() ? 'Idle' : 'Working';
   if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
@@ -120,7 +119,7 @@ return {
   goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
   canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,
   toggleFollow: E(id => select(selectedId === id ? null : id)), get selectedId() { return selectedId; },
-  setTheme: E(k => { if (THEMES[k] && k !== themeKey) applyTheme(k); }),
+  setTheme: k => { if (THEMES[k] && k !== themeKey) E(applyTheme)(k); },
   setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
   startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),

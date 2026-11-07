@@ -156,7 +156,8 @@ function finishWork(a) {
 }
 function work(a, dt) {
   a.workProg = a.runCount > 0 ? 1 - Math.exp(-(simT - a.spellT0) / 4) : Math.min(1, a.workProg + dt * 2);
-  if (a.act && a.act.waiting && a.runCount > 0) { if (!a.bubble || visT > a.bubble.until - 0.2) setBubble(a, 'question', 2); return; }
+  // The dialog's answer is not observable: a question bubble for a few seconds, then normal work.
+  if (a.act && a.act.waiting && a.runCount > 0 && simT - a.act.askedT < 4) { if (!a.bubble || visT > a.bubble.until - 0.2) setBubble(a, 'question', 2); return; }
   a.emitT -= dt; if (a.emitT <= 0) { a.emitT = 0.16; emitWork(a); }
 }
 function think(a, dt) {
@@ -241,10 +242,10 @@ function markWaiting(tool) {
   let best = null;
   for (const act of acts.values()) if (act.tool === tool && !act.waiting && (!best || act.startT > best.startT)) best = act;
   if (!best) return false;
-  best.waiting = true;
+  best.waiting = true; best.askedT = simT;
   const a = agentByRole[best.role];
   setBubble(a, 'question', 2);
-  log(`${a.name} is waiting for your OK to run ${best.tool}${best.label ? ': ' + best.label : ''}.`, a.role);
+  log(`${a.name} asked for your OK to run ${best.tool}${best.label ? ': ' + best.label : ''}.`, a.role);
   return true;
 }
 function handoff(fromRole, toRole, kind, title) {
@@ -312,7 +313,7 @@ function machineStep(key, model, effort) {
 function machineStepEnd(key) { if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1); }
 function machineDone(key, usage, durationMs) {
   const m = machines.get(key); if (!m) return;
-  m.on = false; m.endT = simT; m.usage = usage || m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
+  m.on = false; m.endT = simT; m.usage = usage ? { ...usage } : m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
   if (key === 'main') mainStepOpen = 0;
 }
 function machineInfo(key, info) {

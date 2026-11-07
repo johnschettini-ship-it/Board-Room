@@ -114,7 +114,7 @@ export interface Office {
    * run then replays the same random draws until the next outside event.
    * onFrame may return false to stop early. Returns the frames filmed.
    */
-  film(count: number, dt: number, onFrame: (k: number, frame: Frame, camX: number) => boolean | void): number
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, camX: number) => boolean | void, cut?: boolean): number
   /** Bumped by every outside event, press or setting change. */
   readonly version: number
   readonly zoom: number

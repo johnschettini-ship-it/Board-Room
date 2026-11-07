@@ -104,7 +104,6 @@ function stripLines(st: StripInfo): Line[] {
     const clean = st.receipt.startsWith('Done') && !st.failures.length
     out.push({ key: 'h', text: `${clean ? '✓' : st.receipt.startsWith('Done') ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
   }
-  else if (st.running.some(r => r.waiting)) out.push({ key: 'h', text: `? Waiting for your OK · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
   else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
   else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
   else if (st.open) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
@@ -113,7 +112,7 @@ function stripLines(st: StripInfo): Line[] {
   for (const r of st.running.slice(0, 4)) {
     const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}`
     out.push(r.waiting
-      ? { key: `r${r.id}`, text: `? ${head} · waiting for your OK`, color: '#f4b942' }
+      ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · asked for your OK`, color: '#f4b942' }
       : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
   }
   if (st.running.length > 4) out.push({ key: 'rm', text: `  +${st.running.length - 4} more running`, dim: true })
@@ -142,10 +141,8 @@ function computeLines(o: Office): Line[] {
 }
 function statusBar(o: Office): string | undefined {
   const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
-  const w = st.running.find(r => r.waiting)
-  if (w) return `Workplace: ${w.name} waits for your OK (${w.tool})`
-  const r = st.running[st.running.length - 1]
-  if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
+  const r = st.running.find(x => x.waiting) ?? st.running[st.running.length - 1]
+  if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${r.waiting ? ' · asked for your OK' : ''}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
   if (st.thinking !== null) return `Workplace: Nova thinking ${mmss(st.thinking)}${power}`
   if (st.receipt && st.turnSeconds >= 0 && o.ticker().phase !== 'Idle') return `Workplace: ${st.receipt}`
   return undefined
@@ -399,20 +396,32 @@ function dropFrameCaches(): void {
  * The current film, shot again when it runs out, after an outside event (at
  * most once a second, L2 in the design verdict), or at once after a press.
  */
-function currentFilm(o: Office): { film: Film; fresh: boolean } {
+function currentFilm(o: Office): { film: Film | null; fresh: boolean } {
   const idle = o.ticker().phase === 'Idle'
+  const elapsed = film ? o.simT - film.startT : 0
   const due = !film || forceShot || film.zoom !== o.zoom ||
-    (o.simT - lastShot >= 1 && (o.version !== film.version || o.simT - film.startT >= film.seconds - 0.5))
-  if (!due) return { film: film!, fresh: false }
-  if (!filmFps) filmFps = opts.frameRate
-  const fps = idle ? Math.max(2, Math.round(filmFps / 2)) : filmFps
-  film = shoot(o, fps, idle ? 6 : 2, SVG_LIMIT - 4096, opts.motion)
-  filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(opts.frameRate, filmFps * 2)
+    // the camera cuts to another room: the next film starts there, gate or not
+    (film.cutAt !== null && elapsed >= film.cutAt - 1e-6) ||
+    (o.simT - lastShot >= 1 && (o.version !== film.version || elapsed >= film.seconds - 0.5))
+  if (!due) return { film, fresh: false }
+  // Set first: a shot that throws must not be retried on every tick.
   lastShot = o.simT
   forceShot = false
-  dropFrameCaches()
+  const rate = frameRate()
+  if (!filmFps) filmFps = rate
+  const fps = idle ? Math.max(2, Math.round(filmFps / 2)) : filmFps
+  try {
+    film = shoot(o, fps, idle ? 6 : 2, SVG_LIMIT - 4096, opts.motion)
+    filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(rate, filmFps * 2)
+  } catch {
+    // Keep the last film (or none: the pane then draws a single frame).
+  } finally {
+    dropFrameCaches()
+  }
   return { film, fresh: true }
 }
+/** The frameRate setting, clamped to 2-10 like the tick. */
+const frameRate = (): number => Math.min(10, Math.max(2, Math.round(opts.frameRate) || 8))
 
 /** What the Svg surfaces show as text and buttons: they redraw only when it changes. */
 function signature(o: Office): string {
@@ -533,7 +542,7 @@ export const register: Register = (on, options) => {
       })
       if (!started) {
         started = true
-        const ms = Math.round(1000 / Math.min(10, Math.max(2, opts.frameRate)))
+        const ms = Math.round(1000 / frameRate())
         $.clock.every(ms, () => void tick($))
       }
       paneOpen = (await $.ui.panes()).some(p => p.id === PANE)
@@ -655,9 +664,16 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   // The permission dialog is about to show: that call is waiting on the person, not working.
-  on('classic.PermissionRequest', ($, e, next) => {
-    try { if (ensureOffice().markWaiting(String(e.tool_name))) frameNo++ } catch { /* never in the way */ }
-    return next(e)
+  // A settings hook may decide first; only an undecided request reaches the
+  // person. No event says when they answer, so the mark reads "asked for your
+  // OK", which stays true after they approve and the tool runs.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      const decided = r as { decision?: unknown; block?: unknown } | undefined
+      if (decided?.decision === undefined && !decided?.block && ensureOffice().markWaiting(String(e.tool_name))) frameNo++
+    } catch { /* never in the way */ }
+    return r
   }).catch(($, e, next) => next(e))
 
   if (opts.toolChips) {
@@ -746,7 +762,7 @@ export const register: Register = (on, options) => {
 
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
     const cur = currentFilm(o).film
-    const svg = filmSvg(cur, Math.max(0, o.simT - cur.startT))
+    const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
     const strip = stripLines(o.strip())
     const compute = computeLines(o)
     return (

@@ -904,7 +904,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function work(a, dt) {
     a.workProg = a.runCount > 0 ? 1 - Math.exp(-(simT - a.spellT0) / 4) : Math.min(1, a.workProg + dt * 2);
-    if (a.act && a.act.waiting && a.runCount > 0) { if (!a.bubble || visT > a.bubble.until - 0.2) setBubble(a, 'question', 2); return; }
+    // The dialog's answer is not observable: a question bubble for a few seconds, then normal work.
+    if (a.act && a.act.waiting && a.runCount > 0 && simT - a.act.askedT < 4) { if (!a.bubble || visT > a.bubble.until - 0.2) setBubble(a, 'question', 2); return; }
     a.emitT -= dt; if (a.emitT <= 0) { a.emitT = 0.16; emitWork(a); }
   }
   function think(a, dt) {
@@ -989,10 +990,10 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     let best = null;
     for (const act of acts.values()) if (act.tool === tool && !act.waiting && (!best || act.startT > best.startT)) best = act;
     if (!best) return false;
-    best.waiting = true;
+    best.waiting = true; best.askedT = simT;
     const a = agentByRole[best.role];
     setBubble(a, 'question', 2);
-    log(`${a.name} is waiting for your OK to run ${best.tool}${best.label ? ': ' + best.label : ''}.`, a.role);
+    log(`${a.name} asked for your OK to run ${best.tool}${best.label ? ': ' + best.label : ''}.`, a.role);
     return true;
   }
   function handoff(fromRole, toRole, kind, title) {
@@ -1060,7 +1061,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function machineStepEnd(key) { if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1); }
   function machineDone(key, usage, durationMs) {
     const m = machines.get(key); if (!m) return;
-    m.on = false; m.endT = simT; m.usage = usage || m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
+    m.on = false; m.endT = simT; m.usage = usage ? { ...usage } : m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
     if (key === 'main') mainStepOpen = 0;
   }
   function machineInfo(key, info) {
@@ -1554,6 +1555,9 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     while (stack.length) {
       const v = stack.pop();
       if (v === null || typeof v !== 'object' || saved.has(v)) continue;
+      // A frozen object cannot change, and could not be restored: hook event data
+      // (a turn's usage, for one) is frozen to every depth.
+      if ((Array.isArray(v) || Object.getPrototypeOf(v) === Object.prototype) && Object.isFrozen(v)) continue;
       if (Array.isArray(v)) { saved.set(v, v.slice()); for (const x of v) stack.push(x); continue; }
       if (v instanceof Map) { saved.set(v, [...v.entries()]); for (const [k, x] of v) stack.push(k, x); continue; }
       if (v instanceof Set) { saved.set(v, [...v]); for (const x of v) stack.push(x); continue; }
@@ -1566,12 +1570,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     return saved;
   }
   function restoreGraph(saved) {
-    for (const [o, s] of saved) {
+    for (const [o, s] of saved) try {
       if (Array.isArray(o)) { o.length = s.length; for (let i = 0; i < s.length; i++) o[i] = s[i]; }
       else if (o instanceof Map) { o.clear(); for (const [k, x] of s) o.set(k, x); }
       else if (o instanceof Set) { o.clear(); for (const x of s) o.add(x); }
       else { for (const k of Object.keys(o)) if (!(k in s)) delete o[k]; Object.assign(o, s); }
-    }
+    } catch (_) { /* one object that refuses must not leave the rest in the future */ }
   }
   function snapshotAll() {
     return {
@@ -1580,15 +1584,19 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     };
   }
   function restoreAll(s) {
-    restoreGraph(s.graph);
+    try { restoreGraph(s.graph); } finally {
     ({ simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs } = s.v);
+    }
   }
   /**
    * Films up to `count` frames, `dt` seconds apart, starting with the frame of
    * now. onFrame(k, frame, camX) may return false to stop early. The office is
-   * left exactly as it was; returns the number of frames filmed.
+   * left exactly as it was; returns the number of frames filmed. With `cut`,
+   * each frame is drawn with the camera already at the room it is heading for
+   * (the camera only affects drawing, so the run itself is the same): a pan
+   * becomes one cut, which a film can carry cheaply.
    */
-  function film(count, dt, onFrame) {
+  function film(count, dt, onFrame, cut) {
     const saved = snapshotAll(), motionWas = motion;
     // Confetti and disco always go in their own layer while filming: the film
     // draws them as CSS, so they must not be baked into the frames ('full').
@@ -1599,9 +1607,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     try {
       for (let k = 0; k < count; k++) {
         if (k) advance(dt);
-        const f = render();
+        const live = camX;
+        if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc);
+        const shown = Math.round(camX), f = render();
+        camX = live;
         n++;
-        if (onFrame(k, f, Math.round(camX)) === false) break;
+        if (onFrame(k, f, shown) === false) break;
       }
     } finally {
       const rec = tapeAhead ? tapeRec.concat(tapeAhead.slice(tapeAheadI)) : tapeRec;
@@ -1621,7 +1632,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function agentStatus(a) {
     if (a.duet) return a.duet.giver === a ? `Handing off to ${a.duet.taker.name}` : `Receiving from ${a.duet.giver.name}`;
     if (isDancing(a)) return 'Dancing';
-    if (a.runCount > 0 && a.act && a.act.waiting) return `Waiting for your OK · ${a.act.tool}`;
+    if (a.runCount > 0 && a.act && a.act.waiting) return `${a.act.tool}${a.act.label ? ' · ' + a.act.label : ''} · asked for your OK`;
     const m = mission;
     switch (a.state) {
       case 'working':
@@ -1637,7 +1648,6 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function phaseText() {
     const m = mission;
-    if ([...acts.values()].some(x => x.waiting)) return 'Waiting for your OK';
     if (isThinking() && (!m || m.phase === 'execute')) return 'Thinking';
     if (!m) return idleMode() ? 'Idle' : 'Working';
     if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
@@ -1738,7 +1748,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
     canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,
     toggleFollow: E(id => select(selectedId === id ? null : id)), get selectedId() { return selectedId; },
-    setTheme: E(k => { if (THEMES[k] && k !== themeKey) applyTheme(k); }),
+    setTheme: k => { if (THEMES[k] && k !== themeKey) E(applyTheme)(k); },
     setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
     startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),

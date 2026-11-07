@@ -35,7 +35,7 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 The pane has three parts. The office is the show. The two text parts are the record.
 
-- **Truth strip** (top of the pane): what runs now, as `● Kit (Build) · Edit · auth.ts · 0:04`. The raw tool and target stay next to the role, because a role is a guess for tools such as Bash. A call that waits for your approval shows `? … · waiting for your OK`. A failure stays as `✗ …` until the same target passes or the turn ends. More than four calls show as `+N more`. At the end of a turn the strip shows a receipt: `✓ Done in 1:12 · 4 reads, 2 edits, 1 test`.
+- **Truth strip** (top of the pane): what runs now, as `● Kit (Build) · Edit · auth.ts · 0:04`. The raw tool and target stay next to the role, because a role is a guess for tools such as Bash. A call that needed your approval shows `? … · asked for your OK`. Claude Code reports when the dialog opens but not when you answer, so the mark records the ask and stays until the call ends. A failure stays as `✗ …` until the same target passes or the turn ends. More than four calls show as `+N more`. At the end of a turn the strip shows a receipt: `✓ Done in 1:12 · 4 reads, 2 edits, 1 test`.
 - **Compute rack** (under the room view): one machine per run. `main` is the main loop; each subagent gets its own row. A machine powers on at its first model request and shows model, effort, requests and time: `● main · opus 5.5 · high · 3 req · 0:41`. When the run ends it powers off and shows its tokens: `○ Explore · sonnet 5.5 · 18.2k in (12.0k cached) · 1.1k out · 0:22`. At most 8 rows, then `+N more`. The same machines light up as server racks in the IT lab, in the model's colour.
 - **Status line**: Claude Code's own status bar shows the current call or `Nova thinking` while a turn runs.
 
@@ -54,7 +54,7 @@ The pane has three parts. The office is the show. The two text parts are the rec
 | Agent or Workflow launch | Nova hands off to the matching role in a duet. |
 | Other tools | Nova (Lead) works in the Lead office. |
 | The model thinks (no tool runs) | Nova stands at the board with a thought bubble. Nobody wanders off while a turn is open. |
-| A permission dialog shows | The crew member waits with a `?` bubble: waiting for your OK, not working. |
+| A permission dialog shows | The crew member shows a `?` bubble, and the strip marks the call `asked for your OK`. Not when a settings hook answers the request itself. |
 | The turn ends | The crew goes straight to the Town hall, Nova demos, then the pairs party. |
 | 60 seconds with nothing running | The crew goes idle: desks, coffee, lounge. The pane redraws at a quarter of the frame rate. |
 
@@ -77,10 +77,10 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 
 The hooks module has no DOM or canvas. `hooks/world.ts` is the page's own simulation and art, generated from `source/agent-boardroom.html` by `source/build_world.py`. It paints into a small software canvas (`hooks/raster.ts`).
 
-- **Desktop, mobile and VS Code** get the office as a short film (`hooks/stage.ts`). The office runs ahead for up to 2 seconds, films each frame and rewinds. The Svg holds the first frame plus one layer per later frame with only the pixels that changed, all in one atlas PNG; CSS shows each layer at its time. The client plays it with no further messages, and the pane redraws only for a new film (at most once a second, sooner after a button press) or new text. A tape of the office's random draws makes the live office do exactly what the film showed until the next outside event. Confetti and disco lights are a small CSS overlay that a `prefers-reduced-motion` media query hides; with reduced motion the film also holds still between redraws.
+- **Desktop, mobile and VS Code** get the office as a short film (`hooks/stage.ts`). The office runs ahead for up to 2 seconds, films each frame and rewinds. The Svg holds the first frame plus one layer per later frame with only the pixels that changed, all in one atlas PNG; CSS shows each layer at its time. The client plays it with no further messages, and the pane redraws only for a new film (at most once a second, sooner after a button press) or new text. A tape of the office's random draws makes the live office do exactly what the film showed until the next outside event. In a film the camera cuts to the next room instead of panning (a pan changes every pixel of every frame); the film ends at the cut and the next one starts there. Confetti and disco lights are a small CSS overlay that a `prefers-reduced-motion` media query hides; with reduced motion the film also holds still between redraws, unless `motion` is `full`.
 - **Terminals** get a fresh picture or block-art frame at the frame rate, as before.
 
-A busy two-second film is about 30 KB (one room) or 60 KB (two rooms), against 130 to 200 KB per second for a frame-by-frame stream. Filming costs about 0.1 s of CPU per second while the crew is busy. Hooks only observe: they never change or delay a tool call or a model request, and a fault in the mod is caught and ignored.
+A busy two-second film is about 35 KB for one room and 85 to 100 KB for three, against 130 to 200 KB per second for a frame-by-frame stream. Filming costs 0.1 to 0.15 s of CPU per shot, at most one shot a second while the crew is busy; a hook that arrives mid-shot waits for it. When a terminal and an app view the same session at once, the terminal's full-rate redraws also re-send the film to the app. Hooks only observe: they never change or delay a tool call or a model request, and a fault in the mod is caught and ignored.
 
 One ledger in the hooks module is the source of truth. `tool.call` records each call; `classic.PermissionRequest` marks a call as waiting; `turn.step` powers a machine on for each model request (the stream passes through untouched); `turn.complete` powers it off with the usage the engine reports. Subagent names come from one `$.agent.list()` per new agent, never polled. The design record is in [docs/design-panel](docs/design-panel/verdict.md).
 
