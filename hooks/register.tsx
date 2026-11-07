@@ -165,7 +165,7 @@ function setAccount(u: { rateLimits?: readonly Limit[]; cost?: { usd: number } }
   if (u.cost && Number.isFinite(u.cost.usd)) account = { ...account, usd: u.cost.usd }
 }
 function usageLine(o: Office): Line | null {
-  const kp = o.kpis(), tokens = kp.sessionTokens ? `${k(kp.sessionTokens)} tokens this session` : ''
+  const kp = o.kpis(), tokens = kp.sessionTokens ? `${k(kp.sessionTokens)} tokens since the office opened` : ''
   if (account.limits.length) {
     const parts = account.limits.map(l => `${WINDOW_NAMES[l.kind] ?? l.kind.replace(/_/g, ' ')} ${l.percentUsed}%${untilText(l.resetsAt)}`)
     const spend = account.limits.some(l => l.kind === 'spend_limit') && account.usd !== null ? ` · $${account.usd.toFixed(2)}` : ''
@@ -471,13 +471,19 @@ function currentFilm(o: Office): { film: Film | null; fresh: boolean } {
 /** The frameRate setting, clamped to 2-10 like the tick. */
 const frameRate = (): number => Math.min(10, Math.max(2, Math.round(opts.frameRate) || 8))
 
+/** A room tab: in a 2/3-room view it pins or unpins the room; in a 1-room view it goes there. */
+function roomPress(o: Office, room: number): void {
+  if (o.zoom > 1) o.togglePin(room)
+  else o.goRoom(room)
+}
+
 /** What the Svg surfaces show as text and buttons: they redraw only when it changes. */
 function signature(o: Office): string {
   const t = o.ticker()
   return [
     truthLines(o).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
     `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
-    o.rooms().map(r => `${r.current}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
+    o.rooms().map(r => `${r.current}${r.inView}${r.pinned}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
   ].join('#')
 }
 
@@ -569,7 +575,7 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
-    `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
+    `View: ${s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
     'Strip:',
     ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
@@ -823,8 +829,8 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
             {rooms.map(r => (
-              <Button key={`room-${r.index}`} variant={r.current ? 'primary' : undefined} onPress={() => { o.goRoom(r.index); redraw() }}>
-                {r.name}{r.agents.map(a => <Text color={a.color}>■</Text>)}
+              <Button key={`room-${r.index}`} variant={(o.zoom > 1 ? r.inView : r.current) ? 'primary' : undefined} onPress={() => { roomPress(o, r.index); redraw() }}>
+                {r.pinned ? '◆ ' : ''}{r.name}{r.agents.map(a => <Text color={a.color}>■</Text>)}
               </Button>
             ))}
             <Button key="next" label="›" dimColor={!o.canNext()} onPress={() => { o.nextRoom(); redraw() }} />
@@ -832,6 +838,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
             <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
+            {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
             <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
           </Box>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -862,16 +869,17 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
           {rooms.map(r => (
-            <Button key={`room-${r.index}`} variant={r.current ? 'primary' : undefined} onPress={() => { o.goRoom(r.index); redraw() }}>
-              {r.name} {r.agents.map(a => <Text color={a.color}>■</Text>)}
+            <Button key={`room-${r.index}`} variant={(o.zoom > 1 ? r.inView : r.current) ? 'primary' : undefined} onPress={() => { roomPress(o, r.index); redraw() }}>
+              {r.pinned ? '◆ ' : ''}{r.name} {r.agents.map(a => <Text color={a.color}>■</Text>)}
             </Button>
           ))}
           <Button key="next" label="›" dimColor={!o.canNext()} onPress={() => { o.nextRoom(); redraw() }} />
         </Box>
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1} alignItems="center">
-          <Text dimColor>Rooms in view</Text>
+          <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>
           {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
           <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
+            {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
           <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
         </Box>
         <Text mono size="footnote">{ticker}</Text>

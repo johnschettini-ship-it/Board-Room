@@ -23,6 +23,8 @@ export type RoomInfo = {
   name: string
   current: boolean
   inView: boolean
+  /** Pinned in a 2/3-room view (shown side by side whatever the camera does). */
+  pinned: boolean
   agents: { id: string; name: string; color: string }[]
 }
 
@@ -124,7 +126,7 @@ export type Snapshot = {
     done: number
   }[]
   receptionist: string | null
-  view: { zoom: number; start: number; room: string; autoCam: boolean }
+  view: { zoom: number; start: number; room: string; slots: number[] | null; pinned: string[]; autoCam: boolean }
   particles: { total: number; confetti: number }
   status: StatusLine
   ticker: Ticker
@@ -146,7 +148,11 @@ export interface Office {
    * run then replays the same random draws until the next outside event.
    * onFrame may return false to stop early. Returns the frames filmed.
    */
-  film(count: number, dt: number, onFrame: (k: number, frame: Frame, camX: number) => boolean | void, cut?: boolean): number
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, view: { key: string; hallX: number | null }) => boolean | void, cut?: boolean): number
+  /** 2/3-room view: pin or unpin a room (pinned rooms show side by side); clearPins unpins all. */
+  togglePin(room: number): void
+  clearPins(): void
+  readonly pinned: number[]
   /** Bumped by every outside event, press or setting change. */
   readonly version: number
   readonly zoom: number

@@ -148,16 +148,16 @@ function assemble(base: string, W: number, H: number, layers: Layer[], party: Pa
 export function shoot(o: Office, fps: number, seconds: number, limit: number, motion: Motion): Film {
   const dt = 1 / fps
   const layers: Layer[] = []
-  let prev: Uint32Array | null = null, base = '', W = 0, H = 0, changed = 0, frames = 0, cam0 = 0
+  let prev: Uint32Array | null = null, base = '', W = 0, H = 0, changed = 0, frames = 0, key0 = '', hallX: number | null = null
   let fxFrom: number | null = null, cutAt: number | null = null, budgetHit = false
   const count = Math.max(1, Math.round(seconds * fps) + 1)
-  o.film(count, dt, (k, f, camX) => {
+  o.film(count, dt, (k, f, view) => {
     if (k === 0) {
-      W = f.width; H = f.height; cam0 = camX
+      W = f.width; H = f.height; key0 = view.key; hallX = view.hallX
       base = base64(encodePNG(f.base.data, W, H, false))
       prev = f.base.u32.slice()
     } else {
-      if (camX !== cam0) { cutAt = k * dt; return false }
+      if (view.key !== key0) { cutAt = k * dt; return false } // a camera cut or another set of rooms
       const boxes = changeBoxes(prev!, f.base.u32, W, H)
       let add = 0
       for (const b of boxes) add += b.n
@@ -171,9 +171,8 @@ export function shoot(o: Office, fps: number, seconds: number, limit: number, mo
     return true
   }, true)
   let party: Party | null = null
-  if (fxFrom !== null && motion !== 'reduced') {
-    const hall = o.rooms().findIndex(r => r.name === 'Town hall')
-    party = { hx: hall * 240 - cam0, inFx: motion !== 'full', from: fxFrom }
+  if (fxFrom !== null && motion !== 'reduced' && hallX !== null) {
+    party = { hx: hallX, inFx: motion !== 'full', from: fxFrom }
   }
   // Over the limit after compression: drop the second half of the film until it fits.
   let keep = frames, kept = layers, built = assemble(base, W, H, kept, party, motion)

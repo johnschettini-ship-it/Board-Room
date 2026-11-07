@@ -47,7 +47,7 @@ function restoreAll(s) {
 }
 /**
  * Films up to `count` frames, `dt` seconds apart, starting with the frame of
- * now. onFrame(k, frame, camX) may return false to stop early. The office is
+ * now. onFrame(k, frame, view) may return false to stop early. The office is
  * left exactly as it was; returns the number of frames filmed. With `cut`,
  * each frame is drawn with the camera already at the room it is heading for
  * (the camera only affects drawing, so the run itself is the same): a pan
@@ -66,7 +66,7 @@ function film(count, dt, onFrame, cut) {
       if (k) advance(dt);
       const live = camX;
       if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc);
-      const shown = Math.round(camX), f = render();
+      const shown = viewKey(), f = render();
       camX = live;
       n++;
       if (onFrame(k, f, shown) === false) break;

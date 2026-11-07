@@ -722,9 +722,41 @@ test('a subscription sees its plan windows, never dollars; an API key sees dolla
   const limits = [{ kind: 'five_hour', percentUsed: 42, resetsAt: new Date(now + 3600_000).toISOString() }, { kind: 'seven_day', percentUsed: 18 }]
   await $.session.measure({ context: { window: 200000 }, rateLimits: limits, cost: { usd: 3.21 }, changed: ['rateLimits', 'cost'] } as never)
   let s = await crew($)
-  expect(s).toContain('Plan · 5-hour 42% (resets in 1h 0m) · weekly 18% · 21.5k tokens this session')
+  expect(s).toContain('Plan · 5-hour 42% (resets in 1h 0m) · weekly 18% · 21.5k tokens since the office opened')
   expect(s).not.toContain('$3.21') // a plan is not billed per token
   await $.session.measure({ context: { window: 200000 }, rateLimits: [], cost: { usd: 1.234 }, changed: ['rateLimits', 'cost'] } as never)
   s = await crew($)
-  expect(s).toContain('API · $1.23 this session · 21.5k tokens this session')
+  expect(s).toContain('API · $1.23 this session · 21.5k tokens since the office opened')
+})
+
+test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', async ($, on) => {
+  const w = world(on)
+  await start($)
+  const svgOf = async (u: { find(q: object): Promise<{ props: { source?: unknown } } | undefined> }) => String((await u.find({ type: 'Svg' }))?.props.source ?? '')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'zoom-2' })
+  await ui.press({ key: 'room-3' }) // Boardroom
+  await ui.press({ key: 'room-5' }) // Open office: not a neighbour of the Boardroom
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('2 room(s), pinned Boardroom, Open office')
+  await ui.unmount()
+  const ui2 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await svgOf(ui2 as never)).toContain('viewBox="0 0 480 176"')
+  expect(await ui2.find({ type: 'Button', key: 'unpin' })).toBeDefined()
+  // a third pin in a 2-room view replaces the oldest
+  await ui2.press({ key: 'room-1' }) // Town hall
+  expect(await crew($)).toContain('pinned Open office, Town hall')
+  // unpinning frees a slot for the camera; a 1-room view ignores pins
+  await ui2.press({ key: 'room-1' })
+  expect(await crew($)).toContain('pinned Open office,')
+  await ui2.press({ key: 'zoom-1' })
+  expect(await crew($)).not.toContain('pinned')
+  await ui2.press({ key: 'zoom-3' })
+  expect(await crew($)).toContain('pinned Open office')
+  await ui2.press({ key: 'unpin' })
+  expect(await crew($)).not.toContain('pinned')
+  await ui2.unmount()
+  const ui3 = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await svgOf(ui3 as never)).toContain('viewBox="0 0 720 176"')
+  await ui3.unmount()
 })
