@@ -66,7 +66,7 @@
     "toolChips": {
       "type": "boolean",
       "title": "Tool-row chips",
-      "description": "Add a one-line record under each tool call in the transcript (\"Kit · Edit auth.ts ✓\"). Local sessions only. Takes effect at the next session start.",
+      "description": "Add a one-line record under each tool call in the transcript (\"Brix · Edit auth.ts ✓\"). Local sessions only. Takes effect at the next session start.",
       "default": false
     }
   }

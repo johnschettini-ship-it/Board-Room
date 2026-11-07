@@ -76,6 +76,14 @@ art = patch(art, "const STATIONS = { lead: at(2, 120, 70, 'down'), research: at(
 art = patch(art, "  [5, 42, 80, 'up', 'type'], [5, 146, 80, 'up', 'type'], [5, 198, 80, 'up', 'type'], [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'],",
             "  [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'], [5, 172, 122, 'up', 'type'],\n  [2, 120, 70, 'down', 'type'], [4, 180, 88, 'up', 'read'], [4, 40, 104, 'up', 'type'], [6, 176, 86, 'up', 'type'],")
 
+# Alien crew names (display only; ids stay).
+art = patch(art, "{ id: 'nova', name: 'Nova',", "{ id: 'nova', name: 'Zorya',")
+art = patch(art, "{ id: 'pax', name: 'Pax',", "{ id: 'pax', name: 'Qix',")
+art = patch(art, "{ id: 'iris', name: 'Iris',", "{ id: 'iris', name: 'Lumi',")
+art = patch(art, "{ id: 'kit', name: 'Kit',", "{ id: 'kit', name: 'Brix',")
+art = patch(art, "{ id: 'vale', name: 'Vale',", "{ id: 'vale', name: 'Vex',")
+art = patch(art, "{ id: 'dot', name: 'Dot',", "{ id: 'dot', name: 'Pip',")
+
 cousins = section('cousins:', 'scenery')
 
 scenery = section('scenery', 'sprite painting')

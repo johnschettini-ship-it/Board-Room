@@ -105,7 +105,7 @@ function stripLines(st: StripInfo): Line[] {
     out.push({ key: 'h', text: `${clean ? '✓' : finished ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
   }
   else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
-  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
+  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Zorya thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
   else if (st.open) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
   else out.push({ key: 'h', text: '○ Crew idle', dim: true })
   // Same shape as the old status line: name (role) · raw tool · target · time.
@@ -190,7 +190,7 @@ function statusBar(o: Office): string | undefined {
   const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
   const r = st.running.find(x => x.waiting) ?? st.running[st.running.length - 1]
   if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${r.waiting ? ' · asked for your OK' : ''}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
-  if (st.thinking !== null) return `Workplace: Nova thinking ${mmss(st.thinking)}${power}`
+  if (st.thinking !== null) return `Workplace: Zorya thinking ${mmss(st.thinking)}${power}`
   if (st.receipt && st.turnSeconds >= 0 && o.ticker().phase !== 'Idle') return `Workplace: ${st.receipt}`
   return undefined
 }
@@ -544,7 +544,7 @@ async function paneReport($: Engine): Promise<string> {
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
-/** Which crew member a requested tool call belongs to; planning, hand-offs and the mod's own tools are Nova's. */
+/** Which crew member a requested tool call belongs to; planning, hand-offs and the mod's own tools are Zorya's. */
 function roleOf(name: string, input: unknown): RoleId {
   try {
     const r = routeTool(String(name), (input && typeof input === 'object' ? input : {}) as Record<string, unknown>, SELF_PREFIX)
@@ -711,7 +711,7 @@ export const register: Register = (on, options) => {
       try {
         const o = ensureOffice()
         o.machineStepEnd(key)
-        // The request's tokens go to the crew whose tools it asked for (none: Nova).
+        // The request's tokens go to the crew whose tools it asked for (none: Zorya).
         if (r) o.stepDone(key, r.usage as Partial<Usage> | null, (r.toolUses ?? []).map(t => roleOf(t.name, t.input)))
       } catch { /* ignore */ }
     }

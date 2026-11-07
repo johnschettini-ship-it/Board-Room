@@ -1,5 +1,5 @@
 // Maps Claude's tool calls and plan text to crew roles.
-//   Nova lead · Pax research · Iris design · Kit build · Vale review · Dot qa
+//   Zorya lead · Qix research · Lumi design · Brix build · Vex review · Pip qa
 import type { RoleId } from './types.ts'
 
 export type Route =

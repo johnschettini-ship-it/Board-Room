@@ -1,5 +1,5 @@
 // ================= orchestration rooms =================
-// Boardroom: Nova orchestrates by the wall screen, which shows the turn's
+// Boardroom: Zorya orchestrates by the wall screen, which shows the turn's
 // KPIs once the briefing is over; each running subagent sits at the table in
 // its model's colour, with a thought bubble while its request is open.
 // Open office: the crew works here, and each desk monitor shows that crew
@@ -76,7 +76,7 @@ function drawKpis(S) {
   seg('TIME', dim); seg(clockShort(k.seconds), fg);
   const req = `${k.requests} REQ`; drawText(ctx, req, S.x + S.w - 2 - textW(req), y, fg);
 }
-// The middle top seat is in front of Nova at the screen: it fills last.
+// The middle top seat is in front of Zorya at the screen: it fills last.
 const RUN_SEATS = [0, 2, 3, 4, 5, 6, 7, 1];
 // More subagents than seats stand along the walls; past that a sign at the
 // door counts the rest. Overflow is counted, never dropped.

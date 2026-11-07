@@ -93,8 +93,8 @@ function setPhase(p) {
   const m = mission; m.phase = p; m.phaseT = simT;
   if (p === 'present') {
     setBubble(agentByRole.lead, 'star', 2.5);
-    log(`Nova is briefing the crew on "${m.title}".`, 'lead');
-    announce('Nova is briefing the crew.');
+    log(`Zorya is briefing the crew on "${m.title}".`, 'lead');
+    announce('Zorya is briefing the crew.');
   } else if (p === 'execute') {
     for (const a of agents) if (a.state === 'meeting') { a.state = 'idle'; a.idleT = 0; }
   } else if (p === 'wrap') {
@@ -110,7 +110,7 @@ function setPhase(p) {
     }
   } else if (p === 'demo') {
     setBubble(agentByRole.lead, 'star', 2.5); hall.applauseUntil = visT + 2;
-    log(`Nova demoed "${m.title}" at the town hall.`, 'lead');
+    log(`Zorya demoed "${m.title}" at the town hall.`, 'lead');
     announce('Demo started at the town hall.');
     sfx('clap');
   } else if (p === 'party') {
@@ -144,7 +144,7 @@ function phaseUpdate(dt) {
   if ((m.phase === 'huddle' || m.phase === 'present') && simT - lastEventT > IDLE_AFTER) setPhase('execute');
 }
 function thinkTick() {
-  // Long thinking is work: Nova keeps a thought bubble up and nobody wanders.
+  // Long thinking is work: Zorya keeps a thought bubble up and nobody wanders.
   if (!isThinking()) { thinkT0 = null; return; }
   if (thinkT0 === null) thinkT0 = simT;
   const nova = agentByRole.lead;
@@ -309,15 +309,15 @@ function setCards(list) {
     return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
   });
   if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
-  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Nova put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); }
+  if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); }
   touch(null);
 }
 
 // ---- tokens: summed from each model request's usage as it finishes ----
 // Never estimated mid-stream. roleTok splits each request's tokens evenly
-// across the crew whose tools that request asked for (Read -> Pax, Edit ->
-// Kit, ...); a request that asks for no work (an answer, a plan, a hand-off)
-// counts for Nova. Totals are exact; the split per person is an attribution.
+// across the crew whose tools that request asked for (Read -> Qix, Edit ->
+// Brix, ...); a request that asks for no work (an answer, a plan, a hand-off)
+// counts for Zorya. Totals are exact; the split per person is an attribution.
 const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
 const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
 // The whole session's tokens (never reset): what a subscription spends from its plan.

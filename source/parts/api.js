@@ -23,7 +23,7 @@ function phaseText() {
   if (!m) return idleMode() ? 'Idle' : 'Working';
   if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
   const done = m.tasks.filter(t => t.state === 'done').length;
-  return { huddle: 'Briefing', present: 'Nova is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: m.ships.length ? 'Shipped · ready for a task' : 'Done · ready for a task' }[m.phase];
+  return { huddle: 'Briefing', present: 'Zorya is briefing', execute: m.tasks.length ? `Working · ${done}/${m.tasks.length} done` : 'Working', wrap: 'Off to the town hall', demo: 'Live demo at the town hall', party: 'Shipped · town hall party', done: m.ships.length ? 'Shipped · ready for a task' : 'Done · ready for a task' }[m.phase];
 }
 function rooms() {
   const vr = viewRoom(), vs = viewStart();
