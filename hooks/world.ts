@@ -1514,8 +1514,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     ctx.globalAlpha = 1;
   }
   function paint(fx) {
-    const vx = Math.round(camX), T = THEMES[themeKey];
-    ctx.setTransform(1, 0, 0, 1, -vx, 0);
+    const slots = viewSlots();
+    if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc); return; }
+    slots.forEach((r, i) => paintSpan(fx, r * RW, i * RW, RW));
+  }
+  /** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw). */
+  function paintSpan(fx, vx, sx, sw) {
+    const T = THEMES[themeKey], cam = camX, vw = VWc;
+    camX = vx; VWc = sw; // culling and label placement below read the view from these
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, 0, sw, H); ctx.clip();
+    ctx.setTransform(1, 0, 0, 1, sx - vx, 0);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(bgCanvas, 0, 0);
     drawDynamic();
@@ -1530,12 +1538,13 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     items.push({ y: 90, img: tableCanvas }, { y: 119, img: chairCanvas }, { y: 146, img: frontCanvas }, { y: 175, img: hallCanvas });
     items.sort((p, q) => p.y - q.y);
     for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else if (it.run) drawRun(it.run); else drawAgent(it.a);
-    ctx.shade(lightA, W, vx, T.shade[0], T.shade[1], T.shade[2]);
+    ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw);
     drawParticles(fx);
     for (const n of npcs) if (n.bubble && visT < n.bubble.until && vis(n)) { const P = n._P; drawBubble(Math.round(P.x) - 5, P.oyL + P.bob + accTop(n.look) - 13, n.bubble.icon, n.bubble.color); }
     drawRunBubbles();
     for (const a of agents) if (vis(a)) drawOverlays(a);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.restore(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    camX = cam; VWc = vw;
   }
   function render() {
     // 'auto': the base frame carries no confetti or disco; those ride in an
@@ -1644,6 +1653,37 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // its model's colour, with a thought bubble while its request is open.
   // Open office: the crew works here, and each desk monitor shows that crew
   // member's tokens this turn (see stepDone for how they are attributed).
+  // ---- pinned rooms ----
+  // In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
+  // when they are not neighbours; free slots follow the camera (auto, manual or
+  // a followed crew member). With nothing pinned, the view is the usual run of
+  // neighbouring rooms.
+  const pinned = [];
+  function togglePin(r) {
+    r = clamp(r, 0, ROOMS - 1);
+    const i = pinned.indexOf(r);
+    if (i >= 0) pinned.splice(i, 1);
+    else { pinned.push(r); while (pinned.length > zoom) pinned.shift(); }
+  }
+  function clearPins() { pinned.length = 0; }
+  function trimPins() { while (pinned.length > zoom) pinned.shift(); }
+  /** The rooms in view, left to right, or null for the usual run of neighbours. */
+  function viewSlots() {
+    if (zoom < 2 || !pinned.length) return null;
+    const slots = pinned.slice(-zoom), t = camTarget();
+    for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
+      for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
+    }
+    return slots.sort((p, q) => p - q);
+  }
+  /** What the view shows (a film ends when it changes) and where the town hall sits in it. */
+  function viewKey() {
+    const slots = viewSlots();
+    if (slots) { const h = slots.indexOf(TOWN); return { key: 's' + slots.join(','), hallX: h >= 0 ? h * RW : null }; }
+    const vx = Math.round(camX);
+    return { key: String(vx), hallX: TOWN * RW - vx };
+  }
+
   const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
   function drawDesks() {
     const t = visT;
@@ -1800,7 +1840,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   /**
    * Films up to `count` frames, `dt` seconds apart, starting with the frame of
-   * now. onFrame(k, frame, camX) may return false to stop early. The office is
+   * now. onFrame(k, frame, view) may return false to stop early. The office is
    * left exactly as it was; returns the number of frames filmed. With `cut`,
    * each frame is drawn with the camera already at the room it is heading for
    * (the camera only affects drawing, so the run itself is the same): a pan
@@ -1819,7 +1859,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
         if (k) advance(dt);
         const live = camX;
         if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc);
-        const shown = Math.round(camX), f = render();
+        const shown = viewKey(), f = render();
         camX = live;
         n++;
         if (onFrame(k, f, shown) === false) break;
@@ -1866,7 +1906,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function rooms() {
     const vr = viewRoom(), vs = viewStart();
-    return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: i >= vs && i < vs + zoom, agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
+    const slots = viewSlots();
+    return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: slots ? slots.includes(i) : i >= vs && i < vs + zoom, pinned: zoom > 1 && pinned.includes(i), agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
   }
   function crew() {
     return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a), tokens: roleTok[a.role] || 0 }));
@@ -1952,7 +1993,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       cards: m ? m.tasks.map(t => ({ id: t.id, title: t.title, role: t.role, state: t.state })) : [],
       agents: agents.map(a => ({ id: a.id, name: a.name, role: a.role, state: a.state, room: ROOM_NAMES[roomOf(a.x)], x: Math.round(a.x), y: Math.round(a.y), working: isWorking(a), dancing: isDancing(a), tool: a.act ? a.act.tool : null, running: a.runCount, bubble: a.bubble && visT < a.bubble.until ? a.bubble.icon : null, duet: a.duet ? { giver: a.duet.giver.id, taker: a.duet.taker.id, kind: a.duet.kind } : null, delivering: a.delivery ? { to: a.delivery.to.id, kind: a.delivery.kind } : null, done: a.done })),
       receptionist: receptionist.bubble && visT < receptionist.bubble.until ? receptionist.bubble.icon : null,
-      view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
+      view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
       particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
       status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
       strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
@@ -1969,7 +2010,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   return {
     advance, render, film,
     get version() { return version; },
-    get zoom() { return zoom; }, setZoom: E(setZoom),
+    get zoom() { return zoom; }, setZoom: E(z => { setZoom(z); trimPins(); }),
+    togglePin: E(togglePin), clearPins: E(clearPins), get pinned() { return zoom > 1 ? pinned.slice() : []; },
     get autoCam() { return autoCam; }, setAutoCam: E(setAutoCam),
     goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
     canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,

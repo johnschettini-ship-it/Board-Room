@@ -27,7 +27,8 @@ function phaseText() {
 }
 function rooms() {
   const vr = viewRoom(), vs = viewStart();
-  return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: i >= vs && i < vs + zoom, agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
+  const slots = viewSlots();
+  return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: slots ? slots.includes(i) : i >= vs && i < vs + zoom, pinned: zoom > 1 && pinned.includes(i), agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
 }
 function crew() {
   return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a), tokens: roleTok[a.role] || 0 }));
@@ -113,7 +114,7 @@ function snapshot() {
     cards: m ? m.tasks.map(t => ({ id: t.id, title: t.title, role: t.role, state: t.state })) : [],
     agents: agents.map(a => ({ id: a.id, name: a.name, role: a.role, state: a.state, room: ROOM_NAMES[roomOf(a.x)], x: Math.round(a.x), y: Math.round(a.y), working: isWorking(a), dancing: isDancing(a), tool: a.act ? a.act.tool : null, running: a.runCount, bubble: a.bubble && visT < a.bubble.until ? a.bubble.icon : null, duet: a.duet ? { giver: a.duet.giver.id, taker: a.duet.taker.id, kind: a.duet.kind } : null, delivering: a.delivery ? { to: a.delivery.to.id, kind: a.delivery.kind } : null, done: a.done })),
     receptionist: receptionist.bubble && visT < receptionist.bubble.until ? receptionist.bubble.icon : null,
-    view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
+    view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
     particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
     status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
     strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
@@ -130,7 +131,8 @@ const E = external;
 return {
   advance, render, film,
   get version() { return version; },
-  get zoom() { return zoom; }, setZoom: E(setZoom),
+  get zoom() { return zoom; }, setZoom: E(z => { setZoom(z); trimPins(); }),
+  togglePin: E(togglePin), clearPins: E(clearPins), get pinned() { return zoom > 1 ? pinned.slice() : []; },
   get autoCam() { return autoCam; }, setAutoCam: E(setAutoCam),
   goRoom: E(goRoom), prevRoom: E(() => goRoom(camTarget() - 1)), nextRoom: E(() => goRoom(camTarget() + 1)),
   canPrev: () => viewStart() > 0, canNext: () => viewStart() < ROOMS - zoom,

@@ -1,6 +1,14 @@
 function paint(fx) {
-  const vx = Math.round(camX), T = THEMES[themeKey];
-  ctx.setTransform(1, 0, 0, 1, -vx, 0);
+  const slots = viewSlots();
+  if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc); return; }
+  slots.forEach((r, i) => paintSpan(fx, r * RW, i * RW, RW));
+}
+/** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw). */
+function paintSpan(fx, vx, sx, sw) {
+  const T = THEMES[themeKey], cam = camX, vw = VWc;
+  camX = vx; VWc = sw; // culling and label placement below read the view from these
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, 0, sw, H); ctx.clip();
+  ctx.setTransform(1, 0, 0, 1, sx - vx, 0);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(bgCanvas, 0, 0);
   drawDynamic();
@@ -15,12 +23,13 @@ function paint(fx) {
   items.push({ y: 90, img: tableCanvas }, { y: 119, img: chairCanvas }, { y: 146, img: frontCanvas }, { y: 175, img: hallCanvas });
   items.sort((p, q) => p.y - q.y);
   for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else if (it.run) drawRun(it.run); else drawAgent(it.a);
-  ctx.shade(lightA, W, vx, T.shade[0], T.shade[1], T.shade[2]);
+  ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw);
   drawParticles(fx);
   for (const n of npcs) if (n.bubble && visT < n.bubble.until && vis(n)) { const P = n._P; drawBubble(Math.round(P.x) - 5, P.oyL + P.bob + accTop(n.look) - 13, n.bubble.icon, n.bubble.color); }
   drawRunBubbles();
   for (const a of agents) if (vis(a)) drawOverlays(a);
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.restore(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  camX = cam; VWc = vw;
 }
 function render() {
   // 'auto': the base frame carries no confetti or disco; those ride in an

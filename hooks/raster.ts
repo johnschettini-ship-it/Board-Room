@@ -173,11 +173,12 @@ export class Px {
   }
 
   /** Blends a constant colour by a per-pixel alpha map (the room lighting). */
-  shade(alpha: Uint8Array, mapW: number, mapX: number, r: number, g: number, b: number): void {
+  /** Lights the canvas from an alpha map; with x0/x1, only those columns (one slot of a pinned view). */
+  shade(alpha: Uint8Array, mapW: number, mapX: number, r: number, g: number, b: number, x0 = 0, x1 = this.width): void {
     const W = this.width, H = this.height, d = this.data
     for (let y = 0; y < H; y++) {
-      let i = y * W * 4, m = y * mapW + mapX
-      for (let x = 0; x < W; x++, i += 4, m++) {
+      let i = (y * W + x0) * 4, m = y * mapW + mapX + x0
+      for (let x = x0; x < x1; x++, i += 4, m++) {
         const a = alpha[m]!
         if (!a) continue
         const t = a / 255

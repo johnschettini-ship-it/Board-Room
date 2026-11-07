@@ -4,6 +4,37 @@
 // its model's colour, with a thought bubble while its request is open.
 // Open office: the crew works here, and each desk monitor shows that crew
 // member's tokens this turn (see stepDone for how they are attributed).
+// ---- pinned rooms ----
+// In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
+// when they are not neighbours; free slots follow the camera (auto, manual or
+// a followed crew member). With nothing pinned, the view is the usual run of
+// neighbouring rooms.
+const pinned = [];
+function togglePin(r) {
+  r = clamp(r, 0, ROOMS - 1);
+  const i = pinned.indexOf(r);
+  if (i >= 0) pinned.splice(i, 1);
+  else { pinned.push(r); while (pinned.length > zoom) pinned.shift(); }
+}
+function clearPins() { pinned.length = 0; }
+function trimPins() { while (pinned.length > zoom) pinned.shift(); }
+/** The rooms in view, left to right, or null for the usual run of neighbours. */
+function viewSlots() {
+  if (zoom < 2 || !pinned.length) return null;
+  const slots = pinned.slice(-zoom), t = camTarget();
+  for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
+    for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
+  }
+  return slots.sort((p, q) => p - q);
+}
+/** What the view shows (a film ends when it changes) and where the town hall sits in it. */
+function viewKey() {
+  const slots = viewSlots();
+  if (slots) { const h = slots.indexOf(TOWN); return { key: 's' + slots.join(','), hallX: h >= 0 ? h * RW : null }; }
+  const vx = Math.round(camX);
+  return { key: String(vx), hallX: TOWN * RW - vx };
+}
+
 const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
 function drawDesks() {
   const t = visT;
