@@ -46,12 +46,12 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   })
   on('agent.list', () => ({ value: [{ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' }] }))
   // A model request that streams one chunk, then waits until the test lets it finish.
-  const step = { release: (): void => {} }
+  const step = { release: (): void => {}, usage: null as unknown, toolUses: [] as unknown[] }
   on('turn.step', async function* (_, e) {
     const gate = new Promise<void>(r => { step.release = r })
     yield { kind: 'text', index: 0, text: '…' }
     await gate
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
   return { clock, panes, counts, hold, step, perm }
 }
@@ -148,9 +148,9 @@ test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', asy
   const w = world(on)
   await start($)
   const cases = [
-    { call: { tool: 'Read', file_path: '/work/agent-boardroom.html' }, name: 'Pax', role: 'Research', room: 'Studio' },
+    { call: { tool: 'Read', file_path: '/work/agent-boardroom.html' }, name: 'Pax', role: 'Research', room: 'Open office' },
     { call: { tool: 'Edit', file_path: '/work/hooks/raster.ts', old_string: 'a', new_string: 'b' }, name: 'Kit', role: 'Build', room: 'Open office' },
-    { call: { tool: 'Bash', command: 'npm test' }, name: 'Dot', role: 'QA', room: 'IT lab' },
+    { call: { tool: 'Bash', command: 'npm test' }, name: 'Dot', role: 'QA', room: 'Open office' },
   ] as const
   for (const c of cases) {
     const t0 = performance.now()
@@ -172,7 +172,7 @@ test('3. Read, Edit and a test run put Pax, Kit and Dot to work within 1 s', asy
   // Iris takes UI files
   await $.tool.call({ tool: 'Write', file_path: '/work/pane.css', content: 'a{}' })
   await w.clock.advance(125)
-  expect(line(await crew($), 'Iris')).toMatch(/Heading to the studio|Write/)
+  expect(line(await crew($), 'Iris')).toMatch(/Heading to the open office|Write/)
   // Vale takes git diff
   await $.tool.call({ tool: 'Bash', command: 'git diff --stat' })
   await w.clock.advance(125)
@@ -580,4 +580,31 @@ test('a request a settings hook decides never reaches the person, so it is not m
   expect(await crew($)).not.toMatch(/asked for your OK/)
   w.hold.release()
   await call
+})
+
+test('each model request adds its tokens to the KPIs and to the crew whose tools it asked for', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fix it'))
+  await $.turn.start({ text: 'Fix it', turnId: 't1' } as never)
+  // request 1 asks for a Read and an Edit: Pax and Kit share its 10,001 tokens
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 1000, cache_read_input_tokens: 8000, cache_creation_input_tokens: 1, output_tokens: 1000 }
+  w.step.toolUses = [{ id: 'u1', name: 'Read', input: { file_path: '/a/x.ts' } }, { id: 'u2', name: 'Edit', input: { file_path: '/a/x.ts' } }]
+  await (await stepOpen($, w))()
+  // request 2 only answers: Nova
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 500, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 300 }
+  w.step.toolUses = []
+  await (await stepOpen($, w))()
+  await $.tool.call({ tool: 'Bash', command: 'npm test -- fail' })
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toContain('Tokens 18.5k in (92% cached) · 1.3k out · Calls 1 (1 failed) · 2 req')
+  expect(line(s, 'Pax')).toContain('5.0k tokens') // 5,001: the odd token goes to the first
+  expect(line(s, 'Kit')).toContain('5.0k tokens')
+  expect(line(s, 'Nova')).toContain('9.8k tokens')
+  expect(line(s, 'Dot')).not.toContain('tokens') // ran a test, but no request asked Dot for it here
+  // a new turn starts the counts again
+  await $.turn.complete(turnDone as never)
+  await $.turn.start({ text: 'Again', turnId: 't2' } as never)
+  expect(await crew($)).not.toMatch(/\d tokens/)
 })

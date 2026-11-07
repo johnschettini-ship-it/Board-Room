@@ -36,7 +36,7 @@ function restoreGraph(saved) {
 }
 function snapshotAll() {
   return {
-    graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, mission, focus, lastEnded, flickers, antennas]),
+    graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, mission, focus, lastEnded, flickers, antennas]),
     v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
   };
 }

@@ -30,7 +30,7 @@ function rooms() {
   return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: i >= vs && i < vs + zoom, agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
 }
 function crew() {
-  return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a) }));
+  return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a), tokens: roleTok[a.role] || 0 }));
 }
 function ticker() {
   const m = mission, beat = Math.floor(visBeat()) % 4;
@@ -82,9 +82,18 @@ function machinesInfo() {
   const list = all.slice(0, MAX_MACHINES).map(m => ({
     key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, model: shortModel(m.model), effort: m.effort,
     color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId,
-    seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.usage,
+    seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
   }));
   return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
+}
+function kpiInfo() {
+  const m = mission, tokensIn = turnTok.input + turnTok.cacheRead + turnTok.cacheCreate;
+  return {
+    tokensIn, tokensOut: turnTok.output, cached: tokensIn ? turnTok.cacheRead / tokensIn : 0,
+    calls: turnCalls.length, failed: turnCalls.filter(x => !x.ok).length, running: acts.size,
+    planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
+    seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
+  };
 }
 function toolRole(id) {
   const x = acts.get(id) || turnCalls.find(c => c.id === id);
@@ -100,7 +109,7 @@ function snapshot() {
     view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
     particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
     status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
-    strip: stripInfo(), machines: machinesInfo(),
+    strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok },
   };
 }
 
@@ -123,7 +132,7 @@ return {
   setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
   startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-  turnStart: E(turnStart), markWaiting: E(markWaiting), machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+  turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
   strip: stripInfo, machines: machinesInfo, toolRole,
   get simT() { return simT; },
 };

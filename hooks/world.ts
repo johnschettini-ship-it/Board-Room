@@ -133,7 +133,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   const PLATES = ['RECEPTION', 'TOWN HALL', 'LEAD OFFICE', 'BOARDROOM', 'STUDIO', 'OPEN OFFICE', 'IT LAB', 'KITCHEN', 'LOUNGE'];
   const TOWN = 1, BOARD = 3;
   const at = (k, x, y, face, extra) => ({ x: k * RW + x, y, face, ...extra });
-  const STATIONS = { lead: at(2, 120, 70, 'down'), research: at(4, 180, 88, 'up'), design: at(4, 40, 104, 'up'), build: at(5, 94, 80, 'up'), review: at(5, 172, 122, 'up'), qa: at(6, 176, 86, 'up') };
+  const STATIONS = { lead: at(3, 120, 54, 'down'), research: at(5, 42, 80, 'up'), build: at(5, 86, 80, 'up'), review: at(5, 104, 80, 'up'), design: at(5, 146, 80, 'up'), qa: at(5, 198, 80, 'up') };
   const SEATS = [at(3, 90, 74, 'down'), at(3, 120, 74, 'down'), at(3, 150, 74, 'down'), at(3, 90, 116, 'up'), at(3, 120, 116, 'up'), at(3, 150, 116, 'up'), at(3, 57, 86, 'right'), at(3, 183, 86, 'left')];
   const PRESENT_SPOT = at(3, 120, 54, 'down');
   const DEMO_SPOTS = { lead: at(TOWN, 120, 58, 'down'), research: at(TOWN, 60, 62, 'down'), design: at(TOWN, 84, 62, 'down'), build: at(TOWN, 156, 62, 'down'), review: at(TOWN, 180, 62, 'down'), qa: at(TOWN, 36, 62, 'down') };
@@ -155,7 +155,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     [0, 140, 92, 'up', 'chat'], [0, 204, 122, 'left', 'phone'],
     [2, 100, 108, 'up', 'chat'],
     [4, 100, 92, 'up', 'read'], [4, 150, 122, 'down', 'type'], [4, 222, 64, 'up', 'read'],
-    [5, 42, 80, 'up', 'type'], [5, 146, 80, 'up', 'type'], [5, 198, 80, 'up', 'type'], [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'],
+    [5, 40, 122, 'up', 'type'], [5, 86, 122, 'up', 'type'], [5, 172, 122, 'up', 'type'],
+    [2, 120, 70, 'down', 'type'], [4, 180, 88, 'up', 'read'], [4, 40, 104, 'up', 'type'], [6, 176, 86, 'up', 'type'],
     [6, 52, 104, 'up', 'type'], [6, 140, 86, 'up', 'read'],
     [7, 214, 84, 'up', 'sip'], [7, 54, 122, 'right', 'chat'], [7, 70, 122, 'left', 'chat'], [7, 142, 122, 'up', 'sip'],
     [8, 130, 98, 'left', 'read'], [8, 72, 124, 'up', 'chat']
@@ -819,7 +820,11 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     touch(null); focus = null; directorDwell = 99;
   }
   function turnStart() {
-    if (!turnOpen) { turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k); }
+    if (!turnOpen) {
+      turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k);
+      for (const k in turnTok) turnTok[k] = 0;
+      for (const k in roleTok) roleTok[k] = 0;
+    }
     turnOpen = true; turnT0 = simT; turnEndT = null; turnReason = null; lastEventT = simT;
   }
   function joinHall(a) {
@@ -1041,27 +1046,57 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     touch(null);
   }
 
+  // ---- tokens: summed from each model request's usage as it finishes ----
+  // Never estimated mid-stream. roleTok splits each request's tokens evenly
+  // across the crew whose tools that request asked for (Read -> Pax, Edit ->
+  // Kit, ...); a request that asks for no work (an answer, a plan, a hand-off)
+  // counts for Nova. Totals are exact; the split per person is an attribution.
+  const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
+  const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
+  function stepDone(key, usage, roles) {
+    if (!usage) return;
+    const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
+    const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
+    for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) turnTok[k] += u[k];
+    const total = u.input + u.cacheRead + u.cacheCreate + u.output;
+    const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
+    const share = Math.floor(total / list.length);
+    let rest = total - share * list.length;
+    for (const r of list) { roleTok[r] += share + (rest > 0 ? 1 : 0); if (rest > 0) rest--; }
+    const m = machines.get(key);
+    if (m) {
+      const l = m.live || (m.live = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+      l.input_tokens += u.input; l.cache_read_input_tokens += u.cacheRead; l.cache_creation_input_tokens += u.cacheCreate; l.output_tokens += u.output;
+    }
+    touch(null);
+  }
+
   // ---- compute: one machine per run (main loop or subagent) ----
   function machineStep(key, model, effort) {
     let m = machines.get(key);
     if (!m) {
       if (key === 'main' && !turnOpen) turnStart();
-      m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size };
+      m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
+        // a subagent sits at the boardroom table while it runs, in its model's colour
+        look: key === 'main' ? null : makeLook(900 + machines.size, { color: modelColor(model), acc: null }) };
       machines.set(key, m);
       if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
       while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
     }
-    if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; }
+    if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
     if (model) m.model = String(model);
     if (effort != null) m.effort = String(effort);
-    m.requests++;
+    m.requests++; m.stepOpen++; turnTok.requests++;
     if (key === 'main') mainStepOpen++;
     touch(null);
   }
-  function machineStepEnd(key) { if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1); }
+  function machineStepEnd(key) {
+    const m = machines.get(key); if (m) m.stepOpen = Math.max(0, m.stepOpen - 1);
+    if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1);
+  }
   function machineDone(key, usage, durationMs) {
     const m = machines.get(key); if (!m) return;
-    m.on = false; m.endT = simT; m.usage = usage ? { ...usage } : m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
+    m.on = false; m.endT = simT; m.stepOpen = 0; m.usage = usage ? { ...usage } : m.live; m.durationMs = durationMs == null ? m.durationMs : durationMs;
     if (key === 'main') mainStepOpen = 0;
   }
   function machineInfo(key, info) {
@@ -1288,6 +1323,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
         break;
       }
       default: {
+        if (m.phase !== 'present') { drawKpis(S); break; }
         drawText(ctx, title, x0 + 2, y0 + 2, fg);
         const shown = m.phase === 'present' ? m.cardsShown : m.tasks.length;
         m.tasks.forEach((t, i) => { if (i < shown && i < 16) drawChipPx(x0 + 4 + (i % 8) * 10, y0 + 10 + Math.floor(i / 8) * 7, t); });
@@ -1389,20 +1425,15 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     drawText(ctx, 'LIVE', X(TOWN, 203), 13, Math.floor(visT * 1.5) % 2 ? '#ff5a5a' : '#8a2a2a');
     for (const sc of MINI_SCREENS) drawMini(sc.x, sc.y);
     drawKanban();
-    const pw = isWorking(agentByRole.research);
+    const pw = true; // a cousin researches at this desk now
     rect(ctx, X(4, 173), 49, 12, 8, '#0f2236');
     for (let r = 0; r < 4; r++) rect(ctx, X(4, 174), 50 + r * 2, 3 + Math.floor(hash(r + (pw ? Math.floor(t * 5) : 0), 3) * 7), 1, pw ? '#5ec8e5' : '#2b5a73');
-    const kw = isWorking(agentByRole.build);
-    [[X(5, 79), kw ? Math.floor(t * 6) : 3], [X(5, 97), kw ? Math.floor(t * 4) + 7 : 9]].forEach(([sx, off]) => {
-      rect(ctx, sx, 42, 14, 8, '#0f2236');
-      for (let r = 0; r < 4; r++) { const ind = Math.floor(hash(r + off, 1) * 3) * 2; const len = 3 + Math.floor(hash(r + off, 2) * (7 - ind)); rect(ctx, sx + 1 + ind, 43 + r * 2, len, 1, kw ? CODE_COLS[Math.floor(hash(r + off, 5) * 4)] : '#2b5a73'); }
-    });
-    const vw = isWorking(agentByRole.review);
+    drawDesks();
+    const vw = true; // a cousin works at this desk now
     rect(ctx, X(5, 166), 89, 12, 6, '#123a52');
     for (let r = 0; r < 3; r++) rect(ctx, X(5, 167), 90 + r * 2, 2 + Math.floor(hash(r + (vw ? Math.floor(t * 4) : 0), 7) * 8), 1, vw ? '#b08cf5' : '#2b5a73');
-    const iris = agentByRole.design;
-    if (isWorking(iris)) { const w = Math.round(36 * iris.workProg); rect(ctx, X(4, 22), 77, w, 1, '#f27fb2'); if (Math.floor(t * 3) % 2) rect(ctx, X(4, 22) + w, 75, 1, 2, OUT); }
-    const dw = isWorking(agentByRole.qa);
+    { /* a cousin's design in progress */ const w = Math.round(36 * ((t / 8) % 1)); rect(ctx, X(4, 22), 77, w, 1, '#f27fb2'); if (Math.floor(t * 3) % 2) rect(ctx, X(4, 22) + w, 75, 1, 2, OUT); }
+    const dw = [...machines.values()].some(m => m.on); // the racks are the compute view
     for (const rx of [124, 160, 196]) for (let u = 0; u < 8; u++) {
       const y = 24 + u * 6;
       for (let k = 0; k < 4; k++) { const h = hash(rx + u * 4 + k, Math.floor(t * (dw ? 7 : 2))); rect(ctx, X(6, rx + 4 + k * 2), y + 1, 1, 1, h > 0.55 ? '#6fdc8c' : h > 0.4 ? '#f4b942' : '#232a3d'); }
@@ -1438,12 +1469,14 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const vis = o => o._P.x > vx - 24 && o._P.x < vx + VWc + 24;
     const items = agents.filter(vis).map(a => ({ y: a._P.y, a }));
     for (const n of npcs) if (vis(n)) items.push({ y: n._P.y, n });
+    for (const r of runSeats()) if (r.x > vx - 24 && r.x < vx + VWc + 24) items.push({ y: r.y, run: r });
     items.push({ y: 90, img: tableCanvas }, { y: 119, img: chairCanvas }, { y: 146, img: frontCanvas }, { y: 175, img: hallCanvas });
     items.sort((p, q) => p.y - q.y);
-    for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else drawAgent(it.a);
+    for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else if (it.run) drawRun(it.run); else drawAgent(it.a);
     ctx.shade(lightA, W, vx, T.shade[0], T.shade[1], T.shade[2]);
     drawParticles(fx);
     for (const n of npcs) if (n.bubble && visT < n.bubble.until && vis(n)) { const P = n._P; drawBubble(Math.round(P.x) - 5, P.oyL + P.bob + accTop(n.look) - 13, n.bubble.icon, n.bubble.color); }
+    drawRunBubbles();
     for (const a of agents) if (vis(a)) drawOverlays(a);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
@@ -1541,6 +1574,71 @@ export function createOffice(opts: OfficeOptions = {}): Office {
 
 
 
+  // ================= orchestration rooms =================
+  // Boardroom: Nova orchestrates by the wall screen, which shows the turn's
+  // KPIs once the briefing is over; each running subagent sits at the table in
+  // its model's colour, with a thought bubble while its request is open.
+  // Open office: the crew works here, and each desk monitor shows that crew
+  // member's tokens this turn (see stepDone for how they are attributed).
+  const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
+  function drawDesks() {
+    const t = visT;
+    for (const role of ['research', 'build', 'review', 'design', 'qa']) {
+      const st = STATIONS[role], sx = st.x - 7, col = ROLES[role].color, a = agentByRole[role];
+      rect(ctx, sx, 42, 14, 8, '#0f2236');
+      const tok = roleTok[role] || 0, busy = isWorking(a);
+      if (tok > 0) {
+        const s = tokShort(tok);
+        drawText(ctx, s, sx + Math.floor((14 - textW(s)) / 2), 43, busy ? col : mix(col, '#0f2236', 0.5));
+      } else if (busy) {
+        const off = Math.floor(t * 5);
+        for (let r = 0; r < 4; r++) { const ind = Math.floor(hash(r + off, 1) * 3) * 2; rect(ctx, sx + 1 + ind, 43 + r * 2, 3 + Math.floor(hash(r + off, 2) * (7 - ind)), 1, col); }
+      }
+    }
+  }
+  function drawKpis(S) {
+    const k = kpiInfo(), fg = '#a8e6ff', dim = '#5a8ab8';
+    let x = S.x + 2, y = S.y + 2;
+    const seg = (s, c) => { drawText(ctx, s, x, y, c); x += textW(s) + 4; };
+    const row = () => { x = S.x + 2; y += 7; };
+    seg('IN', dim); seg(tokShort(k.tokensIn), fg); seg('OUT', dim); seg(tokShort(k.tokensOut), fg); row();
+    seg('CALLS', dim); seg(String(k.calls), fg);
+    if (k.failed) { seg('FAIL', dim); seg(String(k.failed), '#ff6b6b'); }
+    if (k.running) { seg('RUN', dim); seg(String(k.running), '#f4b942'); }
+    row();
+    seg('PLAN', dim);
+    if (k.planTotal) {
+      seg(`${k.planDone}/${k.planTotal}`, fg);
+      const bw = S.x + S.w - 3 - x;
+      if (bw > 6) { rect(ctx, x, y + 1, bw, 3, '#16365e'); rect(ctx, x, y + 1, Math.round(bw * k.planDone / k.planTotal), 3, '#78d98e'); }
+    } else seg('-', fg);
+    row();
+    seg('TIME', dim); seg(clockShort(k.seconds), fg);
+    const req = `${k.requests} REQ`; drawText(ctx, req, S.x + S.w - 2 - textW(req), y, fg);
+  }
+  // The middle top seat is in front of Nova at the screen: it fills last.
+  const RUN_SEATS = [0, 2, 3, 4, 5, 6, 7, 1];
+  /** Running subagents and their boardroom seats. */
+  function runSeats() {
+    const out = [];
+    for (const m of machines.values()) {
+      if (!m.on || m.key === 'main' || !m.look) continue;
+      if (out.length >= RUN_SEATS.length) break;
+      const s = SEATS[RUN_SEATS[out.length]];
+      out.push({ m, x: s.x, y: s.y, face: s.face });
+    }
+    return out;
+  }
+  function drawRun(r) {
+    const fx = Math.round(r.x), fy = Math.round(r.y), vb = visBeat() + r.m.seq * 0.37, bp = vb - Math.floor(vb);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(fx - 4, fy - 1, 9, 2);
+    const arms = r.m.stepOpen > 0 ? 'down' : Math.floor(vb) % 2 ? 'type' : 'down';
+    paintSprite(ctx, fx - 5, fy - 16, bp < 0.2 ? 1 : 0, r.face, arms, 0, r.m.look, ((visT + r.m.seq * 0.61) % 4.4) < 0.13, false);
+  }
+  function drawRunBubbles() {
+    for (const r of runSeats()) if (r.m.stepOpen > 0) drawBubble(Math.round(r.x) - 5, Math.round(r.y) - 16 + accTop(r.m.look) - 13, 'think', ICON_COLOR.think);
+  }
+
   // ================= look-ahead (film) =================
   // The office can run ahead for a few seconds, film each frame, and then put
   // every bit of state back. Values are restored in place, so object identity
@@ -1579,7 +1677,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function snapshotAll() {
     return {
-      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, mission, focus, lastEnded, flickers, antennas]),
+      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, mission, focus, lastEnded, flickers, antennas]),
       v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
     };
   }
@@ -1659,7 +1757,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     return ROOM_NAMES.map((name, i) => ({ index: i, name, current: i === vr, inView: i >= vs && i < vs + zoom, agents: agents.filter(a => roomOf(a.x) === i).map(a => ({ id: a.id, name: a.name, color: ROLES[a.role].color })) }));
   }
   function crew() {
-    return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a) }));
+    return agents.map(a => ({ id: a.id, name: a.name, role: a.role, roleLabel: ROLES[a.role].label, color: ROLES[a.role].color, status: agentStatus(a), done: a.done, selected: a.id === selectedId, working: isWorking(a), tokens: roleTok[a.role] || 0 }));
   }
   function ticker() {
     const m = mission, beat = Math.floor(visBeat()) % 4;
@@ -1711,9 +1809,18 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const list = all.slice(0, MAX_MACHINES).map(m => ({
       key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, model: shortModel(m.model), effort: m.effort,
       color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId,
-      seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.usage,
+      seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
     }));
     return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
+  }
+  function kpiInfo() {
+    const m = mission, tokensIn = turnTok.input + turnTok.cacheRead + turnTok.cacheCreate;
+    return {
+      tokensIn, tokensOut: turnTok.output, cached: tokensIn ? turnTok.cacheRead / tokensIn : 0,
+      calls: turnCalls.length, failed: turnCalls.filter(x => !x.ok).length, running: acts.size,
+      planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
+      seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
+    };
   }
   function toolRole(id) {
     const x = acts.get(id) || turnCalls.find(c => c.id === id);
@@ -1729,7 +1836,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
       particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
       status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
-      strip: stripInfo(), machines: machinesInfo(),
+      strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok },
     };
   }
 
@@ -1752,7 +1859,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
     startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-    turnStart: E(turnStart), markWaiting: E(markWaiting), machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+    turnStart: E(turnStart), markWaiting: E(markWaiting), stepDone: E(stepDone), kpis: kpiInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },
   };

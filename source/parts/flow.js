@@ -71,7 +71,11 @@ function startMission(text) {
   touch(null); focus = null; directorDwell = 99;
 }
 function turnStart() {
-  if (!turnOpen) { turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k); }
+  if (!turnOpen) {
+    turnCalls.length = 0; for (const [k, m] of machines) if (!m.on) machines.delete(k);
+    for (const k in turnTok) turnTok[k] = 0;
+    for (const k in roleTok) roleTok[k] = 0;
+  }
   turnOpen = true; turnT0 = simT; turnEndT = null; turnReason = null; lastEventT = simT;
 }
 function joinHall(a) {
@@ -293,27 +297,57 @@ function setCards(list) {
   touch(null);
 }
 
+// ---- tokens: summed from each model request's usage as it finishes ----
+// Never estimated mid-stream. roleTok splits each request's tokens evenly
+// across the crew whose tools that request asked for (Read -> Pax, Edit ->
+// Kit, ...); a request that asks for no work (an answer, a plan, a hand-off)
+// counts for Nova. Totals are exact; the split per person is an attribution.
+const turnTok = { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, requests: 0 };
+const roleTok = { lead: 0, research: 0, design: 0, build: 0, review: 0, qa: 0 };
+function stepDone(key, usage, roles) {
+  if (!usage) return;
+  const n = v => (Number.isFinite(+v) && +v > 0 ? Math.round(+v) : 0);
+  const u = { input: n(usage.input_tokens), cacheRead: n(usage.cache_read_input_tokens), cacheCreate: n(usage.cache_creation_input_tokens), output: n(usage.output_tokens) };
+  for (const k of ['input', 'cacheRead', 'cacheCreate', 'output']) turnTok[k] += u[k];
+  const total = u.input + u.cacheRead + u.cacheCreate + u.output;
+  const list = (roles && roles.length ? roles : ['lead']).map(r => (r in roleTok ? r : 'lead'));
+  const share = Math.floor(total / list.length);
+  let rest = total - share * list.length;
+  for (const r of list) { roleTok[r] += share + (rest > 0 ? 1 : 0); if (rest > 0) rest--; }
+  const m = machines.get(key);
+  if (m) {
+    const l = m.live || (m.live = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 });
+    l.input_tokens += u.input; l.cache_read_input_tokens += u.cacheRead; l.cache_creation_input_tokens += u.cacheCreate; l.output_tokens += u.output;
+  }
+  touch(null);
+}
+
 // ---- compute: one machine per run (main loop or subagent) ----
 function machineStep(key, model, effort) {
   let m = machines.get(key);
   if (!m) {
     if (key === 'main' && !turnOpen) turnStart();
-    m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size };
+    m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
+      // a subagent sits at the boardroom table while it runs, in its model's colour
+      look: key === 'main' ? null : makeLook(900 + machines.size, { color: modelColor(model), acc: null }) };
     machines.set(key, m);
     if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
     while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
   }
-  if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; }
+  if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
   if (model) m.model = String(model);
   if (effort != null) m.effort = String(effort);
-  m.requests++;
+  m.requests++; m.stepOpen++; turnTok.requests++;
   if (key === 'main') mainStepOpen++;
   touch(null);
 }
-function machineStepEnd(key) { if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1); }
+function machineStepEnd(key) {
+  const m = machines.get(key); if (m) m.stepOpen = Math.max(0, m.stepOpen - 1);
+  if (key === 'main') mainStepOpen = Math.max(0, mainStepOpen - 1);
+}
 function machineDone(key, usage, durationMs) {
   const m = machines.get(key); if (!m) return;
-  m.on = false; m.endT = simT; m.usage = usage ? { ...usage } : m.usage; m.durationMs = durationMs == null ? m.durationMs : durationMs;
+  m.on = false; m.endT = simT; m.stepOpen = 0; m.usage = usage ? { ...usage } : m.live; m.durationMs = durationMs == null ? m.durationMs : durationMs;
   if (key === 'main') mainStepOpen = 0;
 }
 function machineInfo(key, info) {

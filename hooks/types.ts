@@ -34,6 +34,8 @@ export type CrewInfo = {
   done: number
   selected: boolean
   working: boolean
+  /** Tokens this turn attributed to this crew member (see stepDone). */
+  tokens: number
 }
 
 export type Ticker = { phase: string; beat: number; done: number; total: number; duets: number; clock: string; title: string }
@@ -54,6 +56,19 @@ export type StripInfo = {
   failures: (Who & { id: string })[]
   recent: (Who & { id: string; ok: boolean; seconds: number })[]
   receipt: string | null
+}
+export type Kpis = {
+  tokensIn: number
+  tokensOut: number
+  /** Share of input served from cache, 0..1. */
+  cached: number
+  calls: number
+  failed: number
+  running: number
+  planDone: number
+  planTotal: number
+  seconds: number
+  requests: number
 }
 export type Usage = { model?: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 export type MachineInfo = {
@@ -104,6 +119,8 @@ export type Snapshot = {
   announce: string
   strip: StripInfo
   machines: MachinesInfo
+  kpis: Kpis
+  tokens: Record<RoleId, number>
 }
 
 export interface Office {
@@ -149,6 +166,9 @@ export interface Office {
   machineStepEnd(key: string): void
   machineDone(key: string, usage?: Usage | null, durationMs?: number): void
   machineInfo(key: string, info: { type?: string; description?: string; parentId?: string }): void
+  /** One model request finished: add its usage, split across the crew whose tools it asked for. */
+  stepDone(key: string, usage: Partial<Usage> | null | undefined, roles: RoleId[]): void
+  kpis(): Kpis
   strip(): StripInfo
   machines(): MachinesInfo
   toolRole(id: string): (Who & { ok: boolean | null; seconds: number }) | null

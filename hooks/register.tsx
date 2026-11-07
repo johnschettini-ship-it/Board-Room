@@ -11,7 +11,7 @@ import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
 import { filmSvg, shoot, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
-import type { Card, Frame, MachineInfo, Motion, Office, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
+import type { Card, Frame, Kpis, MachineInfo, Motion, Office, RoleId, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -124,11 +124,23 @@ function stripLines(st: StripInfo): Line[] {
   }
   return out
 }
+function kpiLine(kp: Kpis): Line | null {
+  if (!kp.requests && !kp.calls) return null
+  const cached = kp.tokensIn ? ` (${Math.round(kp.cached * 100)}% cached)` : ''
+  const plan = kp.planTotal ? ` · Plan ${kp.planDone}/${kp.planTotal}` : ''
+  return { key: 'kpi', text: `Tokens ${k(kp.tokensIn)} in${cached} · ${k(kp.tokensOut)} out · Calls ${kp.calls}${kp.failed ? ` (${kp.failed} failed)` : ''}${plan} · ${kp.requests} req · ${mmss(kp.seconds)}`, dim: true }
+}
+/** The strip with the turn's KPIs under its first line. */
+function truthLines(o: Office): Line[] {
+  const lines = stripLines(o.strip()), kp = kpiLine(o.kpis())
+  if (kp) lines.splice(1, 0, kp)
+  return lines
+}
 function machineLine(m: MachineInfo): Line {
   const indent = m.key === 'main' ? '' : '  '
   const head = `${indent}${m.on ? '●' : '○'} ${m.name} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
-  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req · ${mmss(m.seconds)}`, color: m.color }
   const u: Usage | null = m.usage
+  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${k(u.output_tokens)} out` : ''} · ${mmss(m.seconds)}`, color: m.color }
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
   return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
 }
@@ -427,7 +439,7 @@ const frameRate = (): number => Math.min(10, Math.max(2, Math.round(opts.frameRa
 function signature(o: Office): string {
   const t = o.ticker()
   return [
-    stripLines(o.strip()).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
+    truthLines(o).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
     `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
     o.rooms().map(r => `${r.current}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
   ].join('#')
@@ -496,6 +508,14 @@ async function paneReport($: Engine): Promise<string> {
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
+/** Which crew member a requested tool call belongs to; planning, hand-offs and the mod's own tools are Nova's. */
+function roleOf(name: string, input: unknown): RoleId {
+  try {
+    const r = routeTool(String(name), (input && typeof input === 'object' ? input : {}) as Record<string, unknown>, SELF_PREFIX)
+    return r.kind === 'work' ? r.role : 'lead'
+  } catch { return 'lead' }
+}
+
 async function describeAgent($: Engine, id: string): Promise<void> {
   try {
     const a = (await $.agent.list()).find(x => x.id === id)
@@ -509,11 +529,11 @@ function summary(o: Office): string {
   return [
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
-    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}`),
+    ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} tokens` : ''}`),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
     'Strip:',
-    ...stripLines(s.strip).map(l => `  ${l.text}`),
+    ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
     'Recent:',
     ...s.log.slice(-8).map(l => `  ${s.simT - l.t < 0.05 ? 'now' : `${(s.simT - l.t).toFixed(1)}s ago`} · ${l.text}`),
@@ -644,10 +664,17 @@ export const register: Register = (on, options) => {
       ensureOffice().machineStep(key, e.model, e.effort)
       if (e.agentId && !agentsAsked.has(e.agentId)) { agentsAsked.add(e.agentId); void describeAgent($, e.agentId) }
     } catch { /* never in the way of a turn */ }
+    let r: { usage?: unknown; toolUses?: readonly { name: string; input: unknown }[] } | undefined
     try {
-      return yield* next(e)
+      r = yield* next(e)
+      return r as never
     } finally {
-      try { ensureOffice().machineStepEnd(key) } catch { /* ignore */ }
+      try {
+        const o = ensureOffice()
+        o.machineStepEnd(key)
+        // The request's tokens go to the crew whose tools it asked for (none: Nova).
+        if (r) o.stepDone(key, r.usage as Partial<Usage> | null, (r.toolUses ?? []).map(t => roleOf(t.name, t.input)))
+      } catch { /* ignore */ }
     }
   })
 
@@ -708,7 +735,7 @@ export const register: Register = (on, options) => {
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
       // Fit the office to the pane: leave two rows under it for the status
       // line and the ticker, and keep its shape by narrowing it if needed.
-      const strip = stripLines(o.strip())
+      const strip = truthLines(o)
       const compute = computeLines(o)
       const bodyRows = e.props.scroll?.bodyRows ?? 40
       // Too small for pixels: the strip and compute rows alone stay readable.
@@ -763,7 +790,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
     const cur = currentFilm(o).film
     const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
-    const strip = stripLines(o.strip())
+    const strip = truthLines(o)
     const compute = computeLines(o)
     return (
       <Box flexDirection="column" gap={1}>
@@ -801,7 +828,7 @@ export const register: Register = (on, options) => {
                   <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
                 </Button>
                 <Text size="footnote" dimColor wrap="truncate-end">{c.status}</Text>
-                <Text size="caption" dimColor>{`${c.done} done`}</Text>
+                <Text size="caption" dimColor>{`${c.done} done${c.tokens ? ` · ${k(c.tokens)} tokens` : ''}`}</Text>
               </Box>
             </Box>
           ))}
