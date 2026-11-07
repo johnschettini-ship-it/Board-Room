@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -62,6 +62,12 @@
         "blocks",
         "image"
       ]
+    },
+    "toolChips": {
+      "type": "boolean",
+      "title": "Tool-row chips",
+      "description": "Add a one-line record under each tool call in the transcript (\"Kit · Edit auth.ts ✓\"). Local sessions only. Takes effect at the next session start.",
+      "default": false
     }
   }
 }

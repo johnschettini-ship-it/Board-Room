@@ -29,13 +29,22 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - The pane opens when a session starts. Turn this off with the `openOnStart` setting.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
+- In a cloud session the app gives mods no drawing surface. `/workplace` then says so in one line.
+
+## What you see
+
+The pane has three parts. The office is the show. The two text parts are the record.
+
+- **Truth strip** (top of the pane): what runs now, as `● Kit (Build) · Edit · auth.ts · 0:04`. The raw tool and target stay next to the role, because a role is a guess for tools such as Bash. A call that waits for your approval shows `? … · waiting for your OK`. A failure stays as `✗ …` until the same target passes or the turn ends. More than four calls show as `+N more`. At the end of a turn the strip shows a receipt: `✓ Done in 1:12 · 4 reads, 2 edits, 1 test`.
+- **Compute rack** (under the room view): one machine per run. `main` is the main loop; each subagent gets its own row. A machine powers on at its first model request and shows model, effort, requests and time: `● main · opus 5.5 · high · 3 req · 0:41`. When the run ends it powers off and shows its tokens: `○ Explore · sonnet 5.5 · 18.2k in (12.0k cached) · 1.1k out · 0:22`. At most 8 rows, then `+N more`. The same machines light up as server racks in the IT lab, in the model's colour.
+- **Status line**: Claude Code's own status bar shows the current call or `Nova thinking` while a turn runs.
 
 ## What drives the crew
 
 | Event | In the office |
 | --- | --- |
 | You send a prompt | Reception logs it. The crew walks to the Boardroom and Nova briefs. The mission title is the first 60 characters of the prompt. |
-| TodoWrite, TaskCreate, TaskUpdate, TaskList | Each item becomes a card on the Boardroom screen and the Open office kanban. Its role comes from its text. |
+| TodoWrite, TaskCreate, TaskUpdate, TaskList | Each item becomes a card on the Boardroom screen and the Open office kanban, as written. Cards are not assigned to a role: a guess from the text was often wrong. |
 | Read, Grep, Glob, WebSearch, WebFetch | Pax (Research) works in the Studio. |
 | Write or Edit on .css, .html, .tsx, .jsx, .svg | Iris (Design) works in the Studio. |
 | Any other Write or Edit | Kit (Build) works in the Open office. |
@@ -44,10 +53,12 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 | Other Bash | Pax for read-only commands (ls, cat, grep), else Kit. |
 | Agent or Workflow launch | Nova hands off to the matching role in a duet. |
 | Other tools | Nova (Lead) works in the Lead office. |
-| The turn ends | The crew walks to the Town hall, Nova demos, then the pairs party. |
-| 60 seconds without events | The crew goes idle: desks, coffee, lounge. |
+| The model thinks (no tool runs) | Nova stands at the board with a thought bubble. Nobody wanders off while a turn is open. |
+| A permission dialog shows | The crew member waits with a `?` bubble: waiting for your OK, not working. |
+| The turn ends | The crew goes straight to the Town hall, Nova demos, then the pairs party. |
+| 60 seconds with nothing running | The crew goes idle: desks, coffee, lounge. The pane redraws at a quarter of the frame rate. |
 
-The status line under the room view shows the role at work, the tool and the elapsed time.
+Walks are short (the crew pops through the nearest door) so the office never lags behind the work.
 
 In the Claude desktop app the office is full pixel art. In a terminal it is pixel art where the terminal shows pictures and coloured blocks elsewhere. A terminal cannot read the system's reduced-motion setting, so set `motion` to `reduced` there if you want it.
 
@@ -60,10 +71,13 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | Redraws per second, 2 to 10. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
+| `toolChips` | false | Adds one line under each tool call in the transcript, such as `Kit · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works
 
-The hooks module has no DOM or canvas. `hooks/world.ts` is the page's own simulation and art, generated from `source/agent-boardroom.html` by `source/build_world.py`. It paints into a small software canvas (`hooks/raster.ts`) and each frame goes to the pane as a PNG inside an SVG. Confetti and disco go in a separate layer that a `prefers-reduced-motion` media query hides. Hooks only observe: they never change or delay a tool call, and a fault in the mod is caught and ignored.
+The hooks module has no DOM or canvas. `hooks/world.ts` is the page's own simulation and art, generated from `source/agent-boardroom.html` by `source/build_world.py`. It paints into a small software canvas (`hooks/raster.ts`) and each frame goes to the pane as a PNG inside an SVG. Confetti and disco go in a separate layer that a `prefers-reduced-motion` media query hides. Hooks only observe: they never change or delay a tool call or a model request, and a fault in the mod is caught and ignored.
+
+One ledger in the hooks module is the source of truth. `tool.call` records each call; `classic.PermissionRequest` marks a call as waiting; `turn.step` powers a machine on for each model request (the stream passes through untouched); `turn.complete` powers it off with the usage the engine reports. Subagent names come from one `$.agent.list()` per new agent, never polled. The design record is in [docs/design-panel](docs/design-panel/verdict.md).
 
 To rebuild from a changed page:
 

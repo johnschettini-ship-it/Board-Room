@@ -27,6 +27,8 @@ function program(segment: string): string {
     s = s.replace(/^(?:sudo|time|nice|nohup|exec|command|env)\s+/, '')
     s = s.replace(/^timeout\s+\S+\s+/, '')
     s = s.replace(/^[({]\s*/, '')
+    // git's global options hide the subcommand: `git -C dir log`, `git -c k=v diff`.
+    s = s.replace(/^git\s+(?:(?:-C|-c|--git-dir|--work-tree)(?:\s+|=)(?:"[^"]*"|'[^']*'|\S+)\s+|--no-pager\s+|-P\s+)+/, 'git ')
     if (s === before) return s
   }
 }

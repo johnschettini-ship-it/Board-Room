@@ -2,6 +2,7 @@
 function step(dt) {
   visT += dt; simT += dt;
   phaseUpdate(dt);
+  thinkTick();
   for (const a of agents) updateAgent(a, dt);
   if (mission && mission.phase === 'party' && Math.floor(visBeat()) % 2 === 0 && rand() < 0.02) { const a = agents[Math.floor(rand() * agents.length)]; if (!a.bubble || visT > a.bubble.until) setBubble(a, 'note', 1.2); }
   hallTick(dt);

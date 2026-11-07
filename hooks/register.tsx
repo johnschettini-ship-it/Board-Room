@@ -9,8 +9,8 @@
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
-import { classifyText, routeTool, type Route } from './classify.ts'
-import type { Card, Frame, Motion, Office, Sfx, StatusLine, ThemeId } from './types.ts'
+import { routeTool, type Route } from './classify.ts'
+import type { Card, Frame, MachineInfo, Motion, Office, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -22,13 +22,13 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt }
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -84,6 +84,63 @@ function statusText(s: StatusLine): string {
   return '○ Crew idle'
 }
 
+// ---- truth strip, compute rows, status line (native text: readable, cheap) ----
+type Line = { key: string; text: string; color?: string; dim?: boolean }
+const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+function stripLines(st: StripInfo): Line[] {
+  const out: Line[] = []
+  if (st.receipt) {
+    const clean = st.receipt.startsWith('Done') && !st.failures.length
+    out.push({ key: 'h', text: `${clean ? '✓' : st.receipt.startsWith('Done') ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
+  }
+  else if (st.running.some(r => r.waiting)) out.push({ key: 'h', text: `? Waiting for your OK · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
+  else if (st.running.length) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
+  else if (st.thinking !== null) out.push({ key: 'h', text: `◌ Nova thinking · ${mmss(st.thinking)}`, color: '#f4b942' })
+  else if (st.open) out.push({ key: 'h', text: `● Working · ${mmss(st.turnSeconds)}`, color: '#f4b942' })
+  else out.push({ key: 'h', text: '○ Crew idle', dim: true })
+  // Same shape as the old status line: name (role) · raw tool · target · time.
+  for (const r of st.running.slice(0, 4)) {
+    const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}`
+    out.push(r.waiting
+      ? { key: `r${r.id}`, text: `? ${head} · waiting for your OK`, color: '#f4b942' }
+      : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
+  }
+  if (st.running.length > 4) out.push({ key: 'rm', text: `  +${st.running.length - 4} more running`, dim: true })
+  for (const f of st.failures.slice(0, 2)) out.push({ key: `f${f.id}`, text: `✗ ${f.name} (${f.role}) · ${f.tool}${f.label ? ` · ${f.label}` : ''} failed`, color: '#ff6b6b' })
+  if (st.failures.length > 2) out.push({ key: 'fm', text: `  +${st.failures.length - 2} more failed`, color: '#ff6b6b' })
+  if (st.open && !st.running.length && !st.failures.length && st.recent[0]) {
+    const r = st.recent[0]
+    out.push({ key: 'rc', text: `○ ${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''} · took ${mmss(r.seconds)}`, dim: true })
+  }
+  return out
+}
+function machineLine(m: MachineInfo): Line {
+  const indent = m.key === 'main' ? '' : '  '
+  const head = `${indent}${m.on ? '●' : '○'} ${m.name} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
+  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req · ${mmss(m.seconds)}`, color: m.color }
+  const u: Usage | null = m.usage
+  const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
+  return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
+}
+function computeLines(o: Office): Line[] {
+  const mi = o.machines()
+  if (!mi.list.length) return []
+  const out: Line[] = [{ key: 'ch', text: `Compute · ⚡${mi.on} on`, dim: true }, ...mi.list.map(machineLine)]
+  if (mi.more) out.push({ key: 'cm', text: `  +${mi.more} more machines`, dim: true })
+  return out
+}
+function statusBar(o: Office): string | undefined {
+  const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
+  const w = st.running.find(r => r.waiting)
+  if (w) return `Workplace: ${w.name} waits for your OK (${w.tool})`
+  const r = st.running[st.running.length - 1]
+  if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
+  if (st.thinking !== null) return `Workplace: Nova thinking ${mmss(st.thinking)}${power}`
+  if (st.receipt && st.turnSeconds >= 0 && o.ticker().phase !== 'Idle') return `Workplace: ${st.receipt}`
+  return undefined
+}
+const chips = new Map<string, { text: string; color: string }>()
+
 // ---- plan cards ----
 function openCards(): Card[] {
   const all = [...todoCards, ...taskCards.values()]
@@ -96,7 +153,7 @@ function planBefore(tool: string, input: Record<string, unknown>): boolean {
   if (tool === 'TodoWrite' && Array.isArray(input.todos)) {
     todoCards = (input.todos as { content?: unknown; status?: unknown }[]).slice(0, 24).map((t, i) => {
       const title = String(t?.content ?? '')
-      return { id: `todo-${i}`, title, role: classifyText(title), status: asStatus(t?.status), seen: missionNo }
+      return { id: `todo-${i}`, title, role: 'none', status: asStatus(t?.status), seen: missionNo }
     })
     return true
   }
@@ -104,7 +161,7 @@ function planBefore(tool: string, input: Record<string, unknown>): boolean {
     if (input.status === 'deleted') return taskCards.delete(input.taskId)
     const c = taskCards.get(input.taskId)
     const title = typeof input.subject === 'string' ? input.subject : c?.title ?? `Task ${input.taskId}`
-    taskCards.set(input.taskId, { id: `task-${input.taskId}`, title, role: c && title === c.title ? c.role : classifyText(title), status: input.status ? asStatus(input.status) : c?.status ?? 'pending', seen: missionNo })
+    taskCards.set(input.taskId, { id: `task-${input.taskId}`, title, role: 'none', status: input.status ? asStatus(input.status) : c?.status ?? 'pending', seen: missionNo })
     return true
   }
   return false
@@ -115,7 +172,7 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
     const task = (r.task ?? {}) as { id?: unknown; subject?: unknown }
     const id = String(task.id ?? `local-${taskCards.size + 1}`)
     const title = String(task.subject ?? input.subject ?? '')
-    taskCards.set(id, { id: `task-${id}`, title, role: classifyText(`${title} ${String(input.description ?? '')}`), status: 'pending', seen: missionNo })
+    taskCards.set(id, { id: `task-${id}`, title, role: 'none', status: 'pending', seen: missionNo })
     return true
   }
   if (tool === 'TaskList' && Array.isArray(r.tasks)) {
@@ -124,7 +181,7 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
       if (!id) continue
       const prev = taskCards.get(id)
       const title = String(t.subject ?? prev?.title ?? '')
-      taskCards.set(id, { id: `task-${id}`, title, role: prev?.role ?? classifyText(title), status: asStatus(t.status), seen: prev?.seen ?? missionNo })
+      taskCards.set(id, { id: `task-${id}`, title, role: 'none', status: asStatus(t.status), seen: prev?.seen ?? missionNo })
     }
     return true
   }
@@ -330,7 +387,11 @@ async function tick($: Engine): Promise<void> {
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
-    if (paneOpen) $.ui.invalidate('ui.render')
+    // Idle office: a quarter of the frame rate is plenty and saves CPU.
+    const idle = o.ticker().phase === 'Idle'
+    if (paneOpen && (!idle || frameNo % 4 === 0)) $.ui.invalidate('ui.render')
+    const bar = statusBar(o)
+    if (bar !== lastStatus) { lastStatus = bar; $.ui.status(bar) }
   } catch {
     // A failed frame is skipped; the next tick tries again.
   } finally {
@@ -339,6 +400,8 @@ async function tick($: Engine): Promise<void> {
 }
 
 let lastOpenReason = ''
+let lastStatus: string | undefined
+const agentsAsked = new Set<string>()
 async function showPane($: Engine): Promise<boolean> {
   const r = await $.ui.open({ id: PANE, title: TITLE })
   paneOpen = true
@@ -357,6 +420,13 @@ async function paneReport($: Engine): Promise<string> {
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
 
+async function describeAgent($: Engine, id: string): Promise<void> {
+  try {
+    const a = (await $.agent.list()).find(x => x.id === id)
+    if (a) ensureOffice().machineInfo(id, { type: a.type, description: a.description, parentId: a.parentId })
+  } catch { /* the label just stays generic */ }
+}
+
 function summary(o: Office): string {
   const s = o.snapshot()
   const status = new Map(o.crew().map(c => [c.id, c.status]))
@@ -366,6 +436,9 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}`),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.room}, ${s.view.zoom} room(s), auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
+    'Strip:',
+    ...stripLines(s.strip).map(l => `  ${l.text}`),
+    ...computeLines(o).map(l => `  ${l.text}`),
     'Recent:',
     ...s.log.slice(-8).map(l => `  ${s.simT - l.t < 0.05 ? 'now' : `${(s.simT - l.t).toFixed(1)}s ago`} · ${l.text}`),
   ].join('\n')
@@ -378,6 +451,7 @@ export const register: Register = (on, options) => {
     theme: options.theme === 'night' || options.theme === 'sunset' || options.theme === 'day' ? options.theme : 'auto',
     frameRate: typeof options.frameRate === 'number' ? options.frameRate : 8,
     terminalArt: options.terminalArt === 'blocks' || options.terminalArt === 'image' ? options.terminalArt : 'auto',
+    toolChips: options.toolChips === true,
   }
 
   on('session.start', async ($, e, next) => {
@@ -413,7 +487,10 @@ export const register: Register = (on, options) => {
     const show = arg === 'show' || arg === 'open' || (arg !== 'hide' && arg !== 'close' && !onScreen)
     if (show) {
       const placed = await showPane($)
-      return { text: placed ? 'Digital Workplace pane shown.' : `Digital Workplace pane opened but not drawn yet. Engine says: ${lastOpenReason}` }
+      if (placed) return { text: 'Digital Workplace pane shown.' }
+      // Kept to one short line: Claude reads command replies too.
+      if (lastOpenReason.startsWith('no-surface')) return { text: 'No drawing surface in this session (cloud sessions cannot show mod panes). Open it in a local desktop or terminal session to see the office.' }
+      return { text: `Digital Workplace pane opened but not drawn yet. Engine says: ${lastOpenReason}` }
     }
     paneOpen = false
     await $.ui.close({ id: PANE })
@@ -464,18 +541,72 @@ export const register: Register = (on, options) => {
       return ran
     } finally {
       // Runs on success, failure and abort alike, so no crew member is left working.
-      if (opened) { try { ensureOffice().toolEnd(id, ok) } catch { /* ignore */ } }
+      if (opened) {
+        try {
+          const o = ensureOffice()
+          const info = o.toolRole(id)
+          o.toolEnd(id, ok)
+          if (info && opts.toolChips) {
+            chips.set(id, { text: `${info.name} · ${info.tool}${info.label ? ` ${info.label}` : ''} ${ok ? '✓' : '✗'} ${mmss(info.seconds)}`, color: info.color })
+            if (chips.size > 500) chips.delete(chips.keys().next().value!)
+          }
+        } catch { /* ignore */ }
+      }
     }
   }).catch(($, e, next) => next(e))
 
+  on('turn.start', ($, e, next) => {
+    try { if (!e.agentId) ensureOffice().turnStart() } catch { /* never in the way of a turn */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Each model request powers its machine (main loop or subagent) on; the
+  // stream itself passes through untouched.
+  on('turn.step', async function* ($, e, next) {
+    const key = e.agentId ?? 'main'
+    try {
+      ensureOffice().machineStep(key, e.model, e.effort)
+      if (e.agentId && !agentsAsked.has(e.agentId)) { agentsAsked.add(e.agentId); void describeAgent($, e.agentId) }
+    } catch { /* never in the way of a turn */ }
+    try {
+      return yield* next(e)
+    } finally {
+      try { ensureOffice().machineStepEnd(key) } catch { /* ignore */ }
+    }
+  })
+
   on('turn.complete', ($, e, next) => {
     try {
-      if (!e.agentId) ensureOffice().turnEnd(e.reason)
+      const o = ensureOffice()
+      const usage = (e.usage ?? null) as Usage | null
+      if (e.agentId) o.machineDone(e.agentId, usage, e.durationMs)
+      else { o.machineDone('main', usage, e.durationMs); o.turnEnd(e.reason) }
     } catch {
       // never in the way of a turn
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // The permission dialog is about to show: that call is waiting on the person, not working.
+  on('classic.PermissionRequest', ($, e, next) => {
+    try { if (ensureOffice().markWaiting(String(e.tool_name))) frameNo++ } catch { /* never in the way */ }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  if (opts.toolChips) {
+    on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+      const row = await next(e)
+      const chip = chips.get(e.requestId)
+      if (!chip) return row
+      const { Box, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column">
+          {row}
+          <Text color={chip.color} dimColor>{chip.text}</Text>
+        </Box>
+      )
+    }).catch(($, e, next) => next(e))
+  }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
     const o = ensureOffice()
@@ -488,19 +619,24 @@ export const register: Register = (on, options) => {
     const redraw = (): void => { frameNo++; $.ui.invalidate('ui.render') }
     const beat = ['▪▫▫▫', '▫▪▫▫', '▫▫▪▫', '▫▫▫▪'][t.beat] ?? '▫▫▫▫'
     const ticker = `${t.phase}  ${beat}${t.total ? `  ${t.done}/${t.total} cards` : ''}  Duets ${t.duets}  ${t.clock}`
-    const statusColor = s.state === 'idle' ? undefined : s.color
 
     if (e.surface === 'terminal') {
       const { Box, Text, Button, Image, Raster } = $.ui.resolve(e)
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
       // Fit the office to the pane: leave two rows under it for the status
       // line and the ticker, and keep its shape by narrowing it if needed.
+      const strip = stripLines(o.strip())
+      const compute = computeLines(o)
+      const bodyRows = e.props.scroll?.bodyRows ?? 40
+      // Too small for pixels: the strip and compute rows alone stay readable.
+      const office = e.props.bodyColumns >= 40 && bodyRows >= 14
       const f = renderFrame(o)
-      const maxRows = Math.max(6, (e.props.scroll?.bodyRows ?? 40) - 2)
+      const maxRows = Math.max(6, bodyRows - 2 - strip.length)
       const fitCols = Math.floor((maxRows * 2 * f.width) / f.height)
       const columns = Math.max(20, Math.min(pictures ? 255 : 512, e.props.bodyColumns, fitCols))
       let view
-      if (pictures) {
+      if (!office) view = null
+      else if (pictures) {
         const rows = Math.max(6, Math.min(255, Math.round((columns * f.height) / f.width / 2)))
         view = <Image key="view" source={{ png: terminalPng(o) }} columns={columns} rows={rows} alt={alt} />
       } else {
@@ -509,9 +645,10 @@ export const register: Register = (on, options) => {
       }
       return (
         <Box flexDirection="column">
+          {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
           {view}
-          <Text color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
           <Text>{ticker}</Text>
+          {compute.map(l => <Text key={`c-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
           <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
             <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
             {rooms.map(r => (
@@ -542,8 +679,13 @@ export const register: Register = (on, options) => {
 
     const { Box, Text, Button, Svg } = $.ui.resolve(e)
     const f = encodeFrame(o)
+    const strip = stripLines(o.strip())
+    const compute = computeLines(o)
     return (
       <Box flexDirection="column" gap={1}>
+        <Box key="strip" flexDirection="column">
+          {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+        </Box>
         <Svg source={f.svg} alt={alt} />
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
@@ -561,7 +703,11 @@ export const register: Register = (on, options) => {
           <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
         </Box>
         <Text mono size="footnote">{ticker}</Text>
-        <Text mono size="footnote" color={statusColor} dimColor={s.state === 'idle'}>{statusText(s)}</Text>
+        {compute.length > 0 && (
+          <Box key="compute" flexDirection="column">
+            {compute.map(l => <Text key={`c-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+          </Box>
+        )}
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">
