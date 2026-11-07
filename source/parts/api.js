@@ -129,7 +129,7 @@ for (const a of agents) { const [c, g] = makeCanvas(13, 20); paintSprite(g, 1, 3
 
 const E = external;
 return {
-  advance, render, film,
+  advance, render, film, camPath,
   get version() { return version; },
   get zoom() { return zoom; }, setZoom: E(z => { setZoom(z); trimPins(); }),
   togglePin: E(togglePin), clearPins: E(clearPins), get pinned() { return zoom > 1 ? pinned.slice() : []; },

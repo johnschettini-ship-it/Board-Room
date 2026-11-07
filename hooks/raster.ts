@@ -36,6 +36,8 @@ export class Px {
   opaque = false
   /** Per-row spans of non-transparent pixels, built once by freeze(). */
   spans: Int32Array[] | null = null
+  /** Per row, [start, end) runs of fully opaque pixels (copied as blocks by drawImage). */
+  solid: Int32Array[] | null = null
   globalAlpha = 1
   globalCompositeOperation: Comp = 'source-over'
   imageSmoothingEnabled = false
@@ -139,6 +141,18 @@ export class Px {
       }
       rows.push(Int32Array.from(list))
     }
+    const solid: Int32Array[] = []
+    for (let y = 0; y < this.height; y++) {
+      const list: number[] = []
+      let start = -1
+      for (let x = 0; x <= W; x++) {
+        const full = x < W && d[(y * W + x) * 4 + 3]! === 255
+        if (full && start < 0) start = x
+        else if (!full && start >= 0) { list.push(start, x); start = -1 }
+      }
+      solid.push(Int32Array.from(list))
+    }
+    this.solid = solid
     this.spans = rows
     this.opaque = opaque
     return this
@@ -159,13 +173,43 @@ export class Px {
       }
       return
     }
+    // Pixel art is mostly fully opaque: copy those pixels as they are (what a
+    // blend at alpha 1 gives) and blend only the partly transparent ones.
+    const plain = ga >= 1 && this.globalCompositeOperation === 'source-over', su = src.u32, du = this.u32
+    if (plain && src.solid && src.spans) {
+      for (let y = y0; y < y1; y++) {
+        const sy = y - oy, row = sy * SW, sol = src.solid[sy]!, sp = src.spans[sy]!
+        // whole runs of opaque pixels: block copies
+        for (let k = 0; k < sol.length; k += 2) {
+          const a0 = Math.max(x0, sol[k]! + ox), a1 = Math.min(x1, sol[k + 1]! + ox)
+          if (a0 < a1) du.set(su.subarray(row + a0 - ox, row + a1 - ox), y * W + a0)
+        }
+        // the partly transparent pixels in between: blended one by one
+        for (let k = 0; k < sp.length; k += 2) {
+          const a0 = Math.max(x0, sp[k]! + ox), a1 = Math.min(x1, sp[k + 1]! + ox)
+          for (let x = a0; x < a1; x++) {
+            const a = su[row + x - ox]! >>> 24
+            if (a === 255 || !a) continue
+            const si = (row + x - ox) * 4
+            blend(d, (y * W + x) * 4, s[si]!, s[si + 1]!, s[si + 2]!, s[si + 3]! / 255)
+          }
+        }
+      }
+      return
+    }
     for (let y = y0; y < y1; y++) {
       const sy = y - oy
       const sp = src.spans ? src.spans[sy]! : Int32Array.of(0, SW)
       for (let k = 0; k < sp.length; k += 2) {
         const a0 = Math.max(x0, sp[k]! + ox), a1 = Math.min(x1, sp[k + 1]! + ox)
         for (let x = a0; x < a1; x++) {
-          const si = (sy * SW + (x - ox)) * 4, sa = s[si + 3]! / 255 * ga
+          const sj = sy * SW + (x - ox)
+          if (plain) {
+            const v = su[sj]!, a = v >>> 24
+            if (a === 255) { du[y * W + x] = v; continue }
+            if (!a) continue
+          }
+          const si = sj * 4, sa = s[si + 3]! / 255 * ga
           if (sa > 0) blend(d, (y * W + x) * 4, s[si]!, s[si + 1]!, s[si + 2]!, sa)
         }
       }

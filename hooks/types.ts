@@ -148,7 +148,9 @@ export interface Office {
    * run then replays the same random draws until the next outside event.
    * onFrame may return false to stop early. Returns the frames filmed.
    */
-  film(count: number, dt: number, onFrame: (k: number, frame: Frame, view: { key: string; hallX: number | null }) => boolean | void, cut?: boolean): number
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, view: { key: string; hallX: number | null; camX?: number }) => boolean | void, cut?: boolean | { x: number; w: number }): number
+  /** The live camera's x over the next frames (no drawing), whether rooms are pinned, and the view width. */
+  camPath(count: number, dt: number): { xs: number[]; pinned: boolean; width: number }
   /** 2/3-room view: pin or unpin a room (pinned rooms show side by side); clearPins unpins all. */
   togglePin(room: number): void
   clearPins(): void
