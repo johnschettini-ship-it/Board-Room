@@ -74,7 +74,7 @@ async function crew($: any): Promise<string> {
 const line = (summary: string, name: string): string => summary.split('\n').find(l => l.startsWith(name + ' ')) ?? ''
 const turnDone = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' as const }
 
-test('1. the pane opens at start and shows the office within 2 s, on every surface', async ($, on) => {
+test('1. the pane opens at start and shows the office within 2 s, on every surface', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   const t0 = performance.now()
   await start($)
@@ -401,7 +401,7 @@ test('sub-agent launch plays a hand-off duet from Zorya', async ($, on) => {
   expect(line(s, 'Zorya')).toMatch(/duet nova->pax \(handoff\)/)
 })
 
-test('room tabs, zoom, auto camera, follow and sound respond to presses', async ($, on) => {
+test('room tabs, zoom, auto camera, follow and sound respond to presses', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   await start($)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -732,7 +732,7 @@ test('a subscription sees its plan windows, never dollars; an API key sees dolla
   expect(s).toContain('API · $1.23 this session · 21.5k tokens since the office opened')
 })
 
-test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', async ($, on) => {
+test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   await start($)
   const svgOf = async (u: { find(q: object): Promise<{ props: { source?: unknown } } | undefined> }) => String((await u.find({ type: 'Svg' }))?.props.source ?? '')
@@ -764,7 +764,7 @@ test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to t
   await ui3.unmount()
 })
 
-test('when the camera moves to a nearby room, the desktop film slides instead of cutting', async ($, on) => {
+test('when the camera moves to a nearby room, the desktop film slides instead of cutting', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on, true, undefined, ['desktop'])
   await start($)
   await $.prompt.submit(prompt('Plan, then read'))
@@ -813,5 +813,25 @@ test('after a restart in the middle of a turn, the ticker clock runs from the tu
   await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
   await w.clock.advance(3000)
   expect(await crew($)).toMatch(/^Phase: Working · T\+00:0[234]/m) // was stuck at T+00:00
+})
+
+test('the standard view: the boardroom pinned beside the work; it shows the town hall for a ship', async ($, on) => {
+  const w = world(on)
+  await start($)
+  let s = await crew($)
+  expect(s).toContain('2 room(s), pinned Boardroom')
+  await $.prompt.submit(prompt('Work'))
+  await $.tool.call({ tool: 'mcp__browser__computer' } as never) // Zorya's own tool: no pull to the boardroom
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' })
+  await w.clock.advance(2000)
+  s = await crew($)
+  expect(s).toMatch(/View: Open office, 2 room\(s\), pinned Boardroom/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('viewBox="0 0 480 176"')
+  await ui.unmount()
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
+  await $.turn.complete(turnDone as never)
+  for (let i = 0; i < 40 && !/View: Town hall/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
+  expect(s).toMatch(/View: Town hall, 2 room\(s\), pinned Boardroom/)
 })
 

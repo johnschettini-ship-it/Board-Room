@@ -21,7 +21,11 @@ function trimPins() { while (pinned.length > zoom) pinned.shift(); }
 /** The rooms in view, left to right, or null for the usual run of neighbours. */
 function viewSlots() {
   if (zoom < 2 || !pinned.length) return null;
-  const slots = pinned.slice(-zoom), t = camTarget();
+  const slots = pinned.slice(-zoom), work = roomOf(STATIONS.build.x);
+  // The camera wanting a room already pinned (Zorya in the pinned boardroom)
+  // leaves the free slot on the work, not on the pinned room's neighbour.
+  let t = camTarget();
+  if (slots.includes(t) && !slots.includes(work)) t = work;
   for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
     for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
   }

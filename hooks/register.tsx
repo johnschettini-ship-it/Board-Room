@@ -23,13 +23,13 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast' }
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single' }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -81,6 +81,8 @@ function ensureOffice(): Office {
       zoom: 1,
       onSfx: kind => { if (soundOn && sfxQueue.length < 8) sfxQueue.push(kind) },
     })
+    // The standard view: the boardroom pinned beside the room where the work is.
+    if (opts.view === 'split') { office.setZoom(2); office.togglePin(3) }
   }
   return office
 }
@@ -615,6 +617,7 @@ export const register: Register = (on, options) => {
     terminalArt: options.terminalArt === 'blocks' || options.terminalArt === 'image' ? options.terminalArt : 'auto',
     toolChips: options.toolChips === true,
     walkSpeed: options.walkSpeed === 'slow' || options.walkSpeed === 'fast' ? options.walkSpeed : 'normal',
+    view: options.view === 'single' ? 'single' : 'split',
   }
 
   on('session.start', async ($, e, next) => {

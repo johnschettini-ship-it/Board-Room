@@ -27,6 +27,8 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 ## Use
 
 - The pane opens when a session starts. Turn this off with the `openOnStart` setting.
+- **Standard view:** two rooms, the Boardroom pinned (◆) beside the room where the work is: the Open office while the crew works, the Town hall when work ships. Set `view` to `single` for one room with a camera that follows the work.
+- The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
 - **Pinned rooms:** with 2 or 3 rooms in view, pressing a room tab pins it (◆). Pinned rooms show side by side even when they are not neighbours, for example Town hall + Boardroom + Open office for the whole plan → work → ship flow. A free slot follows the camera. Pinning a room past the view's size replaces the oldest pin; **Unpin** clears them. With 1 room in view, tabs go to the room as before.
@@ -91,6 +93,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `frameRate` | 8 | How often a terminal redraws the office, 2 to 10 times a second. In the app the office plays as films at 20, 10 or 8 frames a second by rooms in view. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 | `walkSpeed` | normal | How fast the crew walks: `normal` is the office page's own pace, `slow` is calmer, `fast` hurries. |
+| `view` | split | `split`: two rooms, the Boardroom pinned beside the work. `single`: one room; the camera follows the work and visits the Boardroom only for briefings. |
 | `toolChips` | false | Adds one line under each tool call in the transcript, such as `Brix · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works

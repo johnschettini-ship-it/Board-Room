@@ -1625,7 +1625,9 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const briefing = !!m && (m.phase === 'huddle' || m.phase === 'present');
     if (briefing && simT - m.startT < 3) { want(BOARD); return; }
     const busy = a => a.state === 'toWork' || a.state === 'delivering' || !!a.duet || (a.state === 'working' && a.runCount > 0);
-    if (focus && (simT - focusT < 4 || busy(focus))) {
+    // The boardroom is for planning: outside a briefing, Zorya's own tool calls
+    // and thinking do not pull the camera there (the strip still shows them).
+    if (focus && !(focus.role === 'lead' && !briefing) && (simT - focusT < 4 || busy(focus))) {
       const a = focus;
       // Heading to work: the desk's room. Carrying a hand-off or a bug: follow them.
       const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
@@ -1638,6 +1640,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (briefing) { want(BOARD); return; }
     const score = new Array(ROOMS).fill(0);
     for (const a of agents) score[roomOf(a.x)] += a.duet ? 4 : a.state === 'working' || a.state === 'toWork' ? 1.2 : a.path.length ? 0.4 : 0.15;
+    score[BOARD] = 0;
     let best = directorRoom; for (let r = 0; r < ROOMS; r++) if (score[r] > score[best]) best = r;
     if (best !== directorRoom && directorDwell > 3.5 && score[best] > score[directorRoom] + 0.9) { directorRoom = best; directorDwell = 0; }
   }
@@ -1680,7 +1683,11 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   /** The rooms in view, left to right, or null for the usual run of neighbours. */
   function viewSlots() {
     if (zoom < 2 || !pinned.length) return null;
-    const slots = pinned.slice(-zoom), t = camTarget();
+    const slots = pinned.slice(-zoom), work = roomOf(STATIONS.build.x);
+    // The camera wanting a room already pinned (Zorya in the pinned boardroom)
+    // leaves the free slot on the work, not on the pinned room's neighbour.
+    let t = camTarget();
+    if (slots.includes(t) && !slots.includes(work)) t = work;
     for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
       for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
     }
