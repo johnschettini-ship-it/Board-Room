@@ -131,7 +131,7 @@ function snapshot() {
     cards: m ? m.tasks.map(t => ({ id: t.id, title: t.title, role: t.role, state: t.state })) : [],
     agents: agents.map(a => ({ id: a.id, name: a.name, role: a.role, state: a.state, room: ROOM_NAMES[roomOf(a.x)], x: Math.round(a.x), y: Math.round(a.y), working: isWorking(a), dancing: isDancing(a), tool: a.act ? a.act.tool : null, running: a.runCount, bubble: a.bubble && visT < a.bubble.until ? a.bubble.icon : null, duet: a.duet ? { giver: a.duet.giver.id, taker: a.duet.taker.id, kind: a.duet.kind } : null, delivering: a.delivery ? { to: a.delivery.to.id, kind: a.delivery.kind } : null, done: a.done })),
     receptionist: receptionist.bubble && visT < receptionist.bubble.until ? receptionist.bubble.icon : null,
-    view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
+    view: { zoom, stacked: isStacked(), start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
     particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
     status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
     strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
@@ -164,6 +164,7 @@ return {
   // recorded only when it changes: every classic event reports the mode
   setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
   lockWorkSlot: E(on => { viewLock.work = !!on; }),
+  setStacked: E(on => { if (!!on !== layout.stacked) setStacked(on); }), get stacked() { return isStacked(); },
   setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
   cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },
   setScreenPage: E(p => { if (p === 'turn' || p === 'session' || p === 'plan') screen.page = p; }), get screenPage() { return screen.page; },

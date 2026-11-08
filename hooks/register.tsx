@@ -9,7 +9,7 @@
 import type { Elements, EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
-import { filmSvg, shoot, type Film } from './stage.ts'
+import { filmSvg, shoot, sized, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
 import type { Card, CardInfo, ContextInfo, Frame, Kpis, MachineInfo, Motion, Office, ReplayEvent, RoleId, ScreenPage, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
@@ -24,13 +24,14 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
 type QuickActions = 'off' | 'fill' | 'send'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions }
+type Layout = 'auto' | 'stacked' | 'side'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -102,7 +103,7 @@ function statusText(s: StatusLine): string {
 
 // ---- truth strip, compute rows, status line (native text: readable, cheap) ----
 type Line = { key: string; text: string; color?: string; dim?: boolean; agent?: string }
-const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+const k = (n: number): string => (n >= 999950 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 function stripLines(st: StripInfo): Line[] {
   const out: Line[] = []
   if (st.receipt) {
@@ -319,6 +320,37 @@ function cardText(c: CardInfo): string {
 }
 const cardMark = (st: CardInfo['state']): string => (st === 'done' ? '✓' : st === 'working' ? '●' : '○')
 
+// ---- the picture: stacked or side by side, as large as the pane allows ----
+// A pane's size comes in cells of the app's code font (RenderViewport); these
+// are that font's advance and line height, roughly, in CSS pixels.
+const CELL_W = 7.5
+const CELL_H = 18
+/** The pane's last size in cells, the picture's width in CSS pixels, and the surface that drew it (for /workplace status). */
+let paneFit: { cols: number; rows: number; width: number; surface: string } | null = null
+/**
+ * Side by side or stacked, whichever draws the rooms larger in this pane (with
+ * some hysteresis), and the picture's width. The height left for the picture
+ * is the pane's less the text and buttons around it (estimated). Side by side
+ * never draws smaller than before (two pixels per office pixel, up to the pane).
+ */
+function fitPicture(o: Office, cols: number, rows: number, textRows: number): { stacked: boolean; width: number } {
+  const n = o.zoom, wPx = cols * CELL_W
+  const hPx = Math.max(176, rows * CELL_H - (textRows * 16 + 300))
+  const side = Math.min(wPx / (n * 240), hPx / 176), stack = Math.min(wPx / 240, hPx / (n * 176))
+  let stacked = o.stacked
+  if (n < 2) stacked = false
+  else if (opts.layout !== 'auto') stacked = opts.layout === 'stacked'
+  else if (stacked ? side > stack * 1.15 : stack > side * 1.15) stacked = !stacked
+  const width = stacked ? Math.round(240 * Math.max(1, stack)) : Math.round(n * 240 * Math.max(2, side))
+  return { stacked, width }
+}
+/** Both offices (live and replay) take the same layout. */
+function setLayout(stacked: boolean): void {
+  const live = ensureOffice()
+  if (live.stacked !== stacked) { live.setStacked(stacked); forceShot = true }
+  if (replay && replay.office.stacked !== stacked) { replay.office.setStacked(stacked); forceShot = true }
+}
+
 // ---- replay: the latest task again, in a second office ----
 /** Pauses longer than this are shortened in a replay (seconds). */
 const REPLAY_GAP = 2
@@ -346,6 +378,7 @@ function startReplay(): boolean {
   for (const r of live.pinned) o.togglePin(r)
   if (opts.view === 'split') o.lockWorkSlot(true)
   o.setScreenPage(live.screenPage)
+  o.setStacked(live.stacked)
   const times: number[] = []
   let at = 0
   events.forEach((ev, i) => { if (i > 0) at += Math.min(REPLAY_GAP, Math.max(0, ev.t - events[i - 1]!.t)); times.push(at) })
@@ -709,7 +742,8 @@ async function paneReport($: Engine): Promise<string> {
   const pane = (await $.ui.panes()).find(p => p.id === PANE)
   if (!pane) return 'Pane: closed. Run /workplace to show it.'
   const state = `Pane: open · shown ${pane.isShown ? 'yes' : 'no'} · placed ${pane.isPlaced ? 'yes' : 'no'}`
-  if (pane.isPlaced) return state
+  const fit = paneFit ? ` · ${paneFit.surface} ${paneFit.cols}×${paneFit.rows} cells · ${ensureOffice().stacked ? 'stacked' : 'side by side'} · picture ${paneFit.width} px` : ''
+  if (pane.isPlaced) return state + fit
   if (!lastOpenReason) { const r = await $.ui.open({ id: PANE, title: TITLE }); lastOpenReason = r.isPlaced ? '' : r.reason }
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
 }
@@ -738,7 +772,7 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
-    `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'} · screen ${PAGE_NAMES[o.screenPage]}${replay ? ` · replay ${replay.paused ? 'paused' : 'playing'} ${mmss(replay.clock)}/${mmss(replay.end)}` : ''}`,
+    `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'}${s.view.stacked ? ' · stacked' : ''} · pane ${paneOpen ? 'open' : 'hidden'} · screen ${PAGE_NAMES[o.screenPage]}${replay ? ` · replay ${replay.paused ? 'paused' : 'playing'} ${mmss(replay.clock)}/${mmss(replay.end)}` : ''}`,
     'Strip:',
     ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
@@ -758,6 +792,7 @@ export const register: Register = (on, options) => {
     walkSpeed: options.walkSpeed === 'slow' || options.walkSpeed === 'fast' ? options.walkSpeed : 'normal',
     view: options.view === 'single' ? 'single' : 'split',
     quickActions: options.quickActions === 'fill' || options.quickActions === 'send' ? options.quickActions : 'off',
+    layout: options.layout === 'stacked' || options.layout === 'side' ? options.layout : 'auto',
   }
 
   on('session.start', async ($, e, next) => {
@@ -976,6 +1011,14 @@ export const register: Register = (on, options) => {
     const ticker = `${t.phase}  ${beat}${t.total ? `  ${t.done}/${t.total} cards` : ''}  Duets ${t.duets}  ${t.clock}`
     const terminal = e.surface === 'terminal'
     const { Box, Text, Button } = $.ui.resolve(e) as Kit
+    // The layout follows the pane's shape (Svg surfaces; a terminal keeps it, unless the setting forces one).
+    let pictureW: number | null = null
+    if (!terminal && e.props.bodyColumns > 0) {
+      const fit = fitPicture(o, e.props.bodyColumns, e.props.scroll?.bodyRows ?? 40, truthLines(o).length + computeLines(o).length)
+      setLayout(fit.stacked)
+      pictureW = fit.width
+      paneFit = { cols: e.props.bodyColumns, rows: e.props.scroll?.bodyRows ?? 0, width: fit.width, surface: e.surface }
+    } else if (opts.layout !== 'auto') setLayout(opts.layout === 'stacked' && o.zoom > 1)
     // Svg surfaces draw small type; terminals have one size.
     const note = terminal ? {} : ({ size: 'footnote' } as const)
     const mono = terminal ? {} : ({ mono: true, size: 'footnote' } as const)
@@ -986,7 +1029,7 @@ export const register: Register = (on, options) => {
     const followed = crew.find(c => c.selected)
 
     // Room tabs: the three work rooms, any room in view, and "+N rooms" for the rest.
-    const tabs = moreRooms ? rooms : rooms.filter(r => MAIN_ROOMS.includes(r.index) || r.current || r.inView || r.pinned)
+    const tabs = moreRooms ? rooms : rooms.filter(r => MAIN_ROOMS.includes(r.index) || (o.zoom > 1 ? r.inView : r.current) || r.pinned)
     const hidden = rooms.filter(r => !tabs.includes(r))
     const roomRow = (
       <Box key="rooms" flexDirection="row" flexWrap="wrap" {...gaps}>
@@ -1012,7 +1055,7 @@ export const register: Register = (on, options) => {
     }
     const controls = (
       <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
-        {!terminal && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
+        {!terminal && (paneFit?.cols ?? 0) >= 110 && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
         {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
         <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
         {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
@@ -1139,14 +1182,16 @@ export const register: Register = (on, options) => {
 
     const { Svg } = $.ui.resolve(e)
     const cur = replay?.paused ? null : currentFilm(o).film
-    const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
+    const svg = sized(cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg, pictureW)
     return (
       <Box flexDirection="column" gap={1}>
         <Box key="strip" flexDirection="column">
           {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
         </Box>
         {replayBar}
-        <Svg source={svg} alt={alt} />
+        <Box key="view" flexDirection="column" alignItems="center">
+          <Svg source={svg} alt={alt} />
+        </Box>
         {roomRow}
         {controls}
         {tickerRow}

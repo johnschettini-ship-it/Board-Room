@@ -22,7 +22,7 @@ const BAND = 32
 const GAP = 32
 
 type Layer = { t: number; x: number; y: number; w: number; h: number; px: Uint8Array; ax: number; ay: number }
-type Party = { hx: number; inFx: boolean; from: number }
+type Party = { hx: number; hy: number; inFx: boolean; from: number }
 
 export type Film = {
   /** office.version when filmed: a later outside event makes the film a guess. */
@@ -126,13 +126,14 @@ function partyMarkup(p: Party, now: number, elapsed: number): string {
       return `${Math.round((k / 8) * 100)}%{transform:translate(${Math.round(Math.cos(t * 1.1 + i) * 80)}px,${Math.round(Math.sin(t * 1.7 + i * 2) * 30)}px)}`
     }).join('')
     const dur = 7 + i * 0.6
-    s += `<style>@keyframes d${i}{${stops}}</style><circle class="d" cx="${p.hx + 120}" cy="100" r="10" fill="${COLS[i]}" style="animation-name:d${i};animation-duration:${dur.toFixed(1)}s;animation-delay:${phase(dur, 0)}"/>`
+    s += `<style>@keyframes d${i}{${stops}}</style><circle class="d" cx="120" cy="100" r="10" fill="${COLS[i]}" style="animation-name:d${i};animation-duration:${dur.toFixed(1)}s;animation-delay:${phase(dur, 0)}"/>`
   }
   for (let i = 0; i < 40; i++) {
     const dur = 4.2 + rnd() * 3, off = rnd() * dur
-    s += `<rect class="c" x="${p.hx + Math.floor(rnd() * 240)}" y="-6" width="${rnd() < 0.5 ? 2 : 1}" height="1" fill="${COLS[i % 6]}" style="animation-duration:${dur.toFixed(2)}s;animation-delay:${phase(dur, off)}"/>`
+    s += `<rect class="c" x="${Math.floor(rnd() * 240)}" y="-6" width="${rnd() < 0.5 ? 2 : 1}" height="1" fill="${COLS[i % 6]}" style="animation-duration:${dur.toFixed(2)}s;animation-delay:${phase(dur, off)}"/>`
   }
-  return `<g class="q${p.inFx ? ' fx' : ''}" style="animation-delay:${(p.from - elapsed).toFixed(3)}s">${s}</g>`
+  // Drawn in the town hall's own box (side by side or stacked), clipped to it.
+  return `<g class="q${p.inFx ? ' fx' : ''}" style="animation-delay:${(p.from - elapsed).toFixed(3)}s"><svg x="${p.hx}" y="${p.hy}" width="240" height="176">${s}</svg></g>`
 }
 const PARTY_SIZE = 7600
 
@@ -161,7 +162,7 @@ function assemble(base: string, W: number, H: number, viewW: number, layers: Lay
 export function shoot(o: Office, fps: number, seconds: number, limit: number, motion: Motion, slide = true): Film {
   const dt = 1 / fps
   const layers: Layer[] = []
-  let prev: Uint32Array | null = null, base = '', W = 0, H = 0, changed = 0, frames = 0, key0 = '', hallX: number | null = null
+  let prev: Uint32Array | null = null, base = '', W = 0, H = 0, changed = 0, frames = 0, key0 = '', hallX: number | null = null, hallY = 0
   let fxFrom: number | null = null, cutAt: number | null = null, budgetHit = false
   const count = Math.max(1, Math.round(seconds * fps) + 1)
   // A camera move that keeps the frames within three rooms slides (the frames
@@ -176,7 +177,7 @@ export function shoot(o: Office, fps: number, seconds: number, limit: number, mo
   const viewW = path ? path.width : 0, offsets: number[] = []
   o.film(count, dt, (k, f, view) => {
     if (k === 0) {
-      W = f.width; H = f.height; key0 = view.key; hallX = view.hallX
+      W = f.width; H = f.height; key0 = view.key; hallX = view.hallX; hallY = view.hallY ?? 0
       base = base64(encodePNG(f.base.data, W, H, false))
       prev = f.base.u32.slice()
     } else {
@@ -198,7 +199,7 @@ export function shoot(o: Office, fps: number, seconds: number, limit: number, mo
   const panOf = (n: number): number[] | null => (strip ? offsets.slice(0, n) : null)
   let party: Party | null = null
   if (fxFrom !== null && motion !== 'reduced' && hallX !== null) {
-    party = { hx: hallX, inFx: motion !== 'full', from: fxFrom }
+    party = { hx: hallX, hy: hallY, inFx: motion !== 'full', from: fxFrom }
   }
   // Over the limit after compression: drop the second half of the film until it fits.
   let keep = frames, kept = layers, built = assemble(base, W, H, vw, kept, party, motion, panOf(keep), dt)
@@ -212,6 +213,15 @@ export function shoot(o: Office, fps: number, seconds: number, limit: number, mo
     width: W, height: H, zoom: o.zoom, head: built.head, layers: kept, party, size: built.size,
     cut: budgetHit || keep < frames, viewW: vw, baseTag: built.baseTag, pan: panOf(keep),
   }
+}
+
+/** An Svg's markup drawn at `width` CSS pixels (its height in proportion): the box takes the markup's size, up to the pane. */
+export function sized(svg: string, width: number | null): string {
+  if (!width) return svg
+  const m = /^<svg [^>]*?width="(\d+)" height="(\d+)"/.exec(svg)
+  if (!m) return svg
+  const w = Math.round(width), h = Math.round((width * +m[2]!) / +m[1]!)
+  return svg.replace(/width="\d+" height="\d+"/, `width="${w}" height="${h}"`)
 }
 
 /** The film's markup for a moment `elapsed` seconds after its first frame. */

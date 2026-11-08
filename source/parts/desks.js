@@ -15,6 +15,19 @@ function recordEvent(name, args) {
   if (replayLog.length > 5000) replayLog.shift();
 }
 
+// ---- layout: rooms in view side by side (wide panes) or stacked (tall panes) ----
+// Stacked, a 2- or 3-room view is one room wide and two or three rooms tall,
+// each room at full width; the camera then cuts between sets of rooms. VWc
+// stays the view's span in the world (camera and culling); the canvas is sized here.
+const layout = { stacked: false };
+const isStacked = () => layout.stacked && zoom > 1;
+function sizeCanvas() {
+  const w = isStacked() ? RW : VWc, h = isStacked() ? H * zoom : H;
+  if (ctx.width === w && ctx.height === h) return;
+  ctx = new Px(w, h); fxCtx = new Px(w, h); fxOut = new Px(w, h);
+}
+function setStacked(on) { layout.stacked = !!on; sizeCanvas(); }
+
 // ---- pinned rooms ----
 // In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
 // when they are not neighbours; free slots follow the camera (auto, manual or
@@ -33,7 +46,9 @@ function clearPins() { pinned.length = 0; }
 function trimPins() { while (pinned.length > zoom) pinned.shift(); }
 /** The rooms in view, left to right, or null for the usual run of neighbours. */
 function viewSlots() {
-  if (zoom < 2 || !pinned.length) return null;
+  if (zoom < 2) return null;
+  // Stacked with nothing pinned: the usual run of neighbours, one above another.
+  if (!pinned.length) return isStacked() ? Array.from({ length: zoom }, (_, i) => viewStart() + i) : null;
   const slots = pinned.slice(-zoom), work = roomOf(STATIONS.build.x);
   // The camera wanting a room already pinned (Zorya in the pinned boardroom)
   // leaves the free slot on the work, not on the pinned room's neighbour.
@@ -48,9 +63,12 @@ function viewSlots() {
 /** What the view shows (a film ends when it changes) and where the town hall sits in it. */
 function viewKey() {
   const slots = viewSlots();
-  if (slots) { const h = slots.indexOf(TOWN); return { key: 's' + slots.join(','), hallX: h >= 0 ? h * RW : null }; }
+  if (slots) {
+    const h = slots.indexOf(TOWN), st = isStacked();
+    return { key: 's' + slots.join(',') + (st ? 'v' : ''), hallX: h < 0 ? null : st ? 0 : h * RW, hallY: h >= 0 && st ? h * H : 0 };
+  }
   const vx = Math.round(camX);
-  return { key: String(vx), hallX: TOWN * RW - vx };
+  return { key: String(vx), hallX: TOWN * RW - vx, hallY: 0 };
 }
 
 const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';

@@ -71,7 +71,7 @@ function film(count, dt, onFrame, cut) {
       if (k) advance(dt);
       const live = camX;
       let shown;
-      if (pan) { shown = { key: 'pan', hallX: TOWN * RW - pan.x, camX: Math.round(camX) - pan.x }; camX = pan.x; }
+      if (pan) { shown = { key: 'pan', hallX: TOWN * RW - pan.x, hallY: 0, camX: Math.round(camX) - pan.x }; camX = pan.x; }
       else { if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc); shown = viewKey(); }
       const f = render();
       camX = live;
