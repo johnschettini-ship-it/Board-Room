@@ -27,8 +27,20 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 ## Use
 
 - The pane opens when a session starts. Turn this off with the `openOnStart` setting.
+- **Standard view:** two rooms, the Boardroom pinned (◆) beside the room where the work is: the Open office while the crew works, the Town hall when work ships. Set `view` to `single` for one room with a camera that follows the work.
+- **Plan mode:** while Claude Code is in plan mode, the whole crew meets in the Boardroom and does its research at the table. When the plan is approved (or the mode changes) everyone goes to their desks.
+- The split view's second slot stays on the Open office (the Town hall during a ship), even when the crew takes a break elsewhere.
+- The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
+- **Room tabs:** the tab row shows the three work rooms (Town hall, Boardroom, Open office) and any room in view. **+N rooms** shows the rest; the coloured squares on it are crew members in those rooms.
+- **Details stay closed until you press them:**
+  - **Crew history:** following a crew member also lists their last 12 calls, newest first: tool, target, pass or fail, time, model and how long ago (`✓ Read a.ts · 0:02 · opus 5.5 · 1m ago`). The history outlives the turn.
+  - **Agent detail:** press a compute row (`main` or a subagent) for its task, type, model and effort, requests, tokens and latest tool call.
+  - **Plan cards:** **Cards ▸** beside the ticker lists the plan's cards; press one for its state, how long it was in progress, and which crew members had calls meanwhile (plan items name no crew member, so this is a time overlap).
+  - **Screen:** flips the Boardroom screen between this turn's KPIs, the session so far (tokens, calls, requests, time open) and the plan's usage windows (or an API key's dollars).
+  - **▶ Replay task:** plays the latest task again in a second office, in order, with pauses over 2 s shortened. **⏸ Pause**, **↺ Again**, and **■ Live** to go back. The live office keeps running meanwhile, and the status bar stays live.
+  - **Quick actions** (off by default, see `quickActions`): Run tests, Review, Commit, Status.
 - **Pinned rooms:** with 2 or 3 rooms in view, pressing a room tab pins it (◆). Pinned rooms show side by side even when they are not neighbours, for example Town hall + Boardroom + Open office for the whole plan → work → ship flow. A free slot follows the camera. Pinning a room past the view's size replaces the oldest pin; **Unpin** clears them. With 1 room in view, tabs go to the room as before.
 - In a cloud session the app gives mods no drawing surface. `/workplace` then says so in one line.
 
@@ -91,6 +103,8 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `frameRate` | 8 | How often a terminal redraws the office, 2 to 10 times a second. In the app the office plays as films at 20, 10 or 8 frames a second by rooms in view. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 | `walkSpeed` | normal | How fast the crew walks: `normal` is the office page's own pace, `slow` is calmer, `fast` hurries. |
+| `view` | split | `split`: two rooms, the Boardroom pinned beside the work. `single`: one room; the camera follows the work and visits the Boardroom only for briefings. |
+| `quickActions` | off | Buttons for common requests: Run tests, Review, Commit, Status. `fill` puts the request in the prompt box after your draft (you press Enter); `send` sends it to Claude at once. |
 | `toolChips` | false | Adds one line under each tool call in the transcript, such as `Brix · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 
 ## How it works

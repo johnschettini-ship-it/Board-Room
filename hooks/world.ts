@@ -816,7 +816,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       a.danceUntil = 0; a.partyPair = null; a.pairTask = null;
       if (a.duet || a.delivery || a.runCount > 0 || a.workUntil > simT) continue;
       a.breakDone = 0; a.breakSpot = null;
-      const st = STATIONS[a.role];
+      const st = stationOf(a);
+      if (planInfo.on) { if (Math.hypot(a.x - st.x, a.y - st.y) > 6) popTo(a, st); a.state = 'meeting'; a.arrived = true; continue; }
       if (a.state === 'break' || a.state === 'meeting' || Math.hypot(a.x - st.x, a.y - st.y) > 6) { a.state = 'idle'; popTo(a, st); }
     }
     log(`Reception logged a new request: "${title}". ${agentByRole.lead.name} is thinking it over.`, 'lead');
@@ -889,7 +890,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       case 'huddle': if (agents.every(a => a.arrived) || tIn > 8) setPhase('present'); break;
       case 'present':
         m.cardsShown = Math.min(m.tasks.length, Math.floor(tIn / (BEAT * 0.75)));
-        if (tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
+        if (!planInfo.on && tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
         break;
       case 'execute': if (m.wrapPending) setPhase('wrap'); break;
       case 'wrap': if (agents.every(a => a.arrived) || tIn > 8) setPhase('demo'); break;
@@ -905,9 +906,44 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const nova = agentByRole.lead;
     if (!nova.duet && (!nova.bubble || visT > nova.bubble.until - 0.2)) setBubble(nova, 'think', 2.5);
   }
+  // ---- plan mode: the crew plans in the boardroom ----
+  // While Claude Code is in plan mode the crew meets at the boardroom table and
+  // does its research there; when the plan is approved (or the mode changes)
+  // everyone goes to their desks. Set only by outside events (hooks).
+  const planInfo = { on: false };
+  const stationOf = a => (planInfo.on && a.meetSeat ? a.meetSeat : STATIONS[a.role]);
+  function setPlanMode(on) {
+    on = !!on;
+    if (on === planInfo.on) return;
+    planInfo.on = on;
+    const m = ensureMission();
+    if (on) {
+      const seats = shuffle(SEATS.slice()); let si = 0;
+      for (const a of agents) {
+        a.meetSeat = a.role === 'lead' ? PRESENT_SPOT : seats[si++];
+        if (a.duet || a.delivery) continue;
+        a.danceUntil = 0; a.partyPair = null; a.breakDone = 0; a.breakSpot = null;
+        if (a.runCount > 0) { startWork(a); continue; } // working: carries on at the table
+        a.deliveries = []; a.state = 'meeting'; a.arrived = false;
+        popTo(a, a.meetSeat, () => { a.arrived = true; });
+      }
+      m.briefed = true;
+      if (m.phase === 'execute' || m.phase === 'done') setPhase('huddle');
+      log('Plan mode: the crew meets in the boardroom to plan.', 'lead');
+      directorDwell = 99;
+    } else {
+      for (const a of agents) {
+        a.meetSeat = null;
+        if (a.runCount > 0 && !a.duet && !a.delivery) startWork(a); // to their desks
+      }
+      if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
+      log('Plan approved: the crew heads to their desks.', 'lead');
+    }
+    touch(null);
+  }
   function startWork(a) {
     a.state = 'toWork'; a.arrived = true; a.breakDone = 0; a.breakSpot = null; a.danceUntil = 0; a.partyPair = null;
-    popTo(a, STATIONS[a.role], () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
+    popTo(a, stationOf(a), () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
   }
   function finishWork(a) {
     a.state = 'idle'; a.idleT = 0; a.workProg = 0;
@@ -925,10 +961,10 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (a.workUntil > simT) { startWork(a); return; }
     if (m && hallEvent() && a.hallMission !== m.id) { joinHall(a); return; }
     if (a.state === 'break') {
-      if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, STATIONS[a.role]); }
+      if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, stationOf(a)); }
       return;
     }
-    const st = STATIONS[a.role];
+    const st = stationOf(a);
     if (!a.path.length && (Math.abs(a.x - st.x) > 1 || Math.abs(a.y - st.y) > 1)) { popTo(a, st); return; }
     if (a.path.length) return;
     if (!idleMode()) { a.idleT = 0; return; }
@@ -974,10 +1010,11 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     // The run that asked for the call (main loop or a subagent) and so its model.
     const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
     const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
+    if (mm) mm.lastTool = act.tool + (act.label ? ' ' + act.label : '');
     acts.set(id, act);
     if (!turnOpen) turnStart();
     // The first real work ends the briefing: the crew goes to its desks.
-    if (mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
+    if (!planInfo.on && mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
     if (a.runCount === 0 && !(a.workUntil > simT)) { a.spellT0 = simT; a.workProg = 0; setBubble(a, ROLES[a.role].icon); }
     a.runCount++; a.workUntil = Infinity; a.act = act; a.danceUntil = 0; a.partyPair = null;
     touch(a);
@@ -995,6 +1032,9 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     // A failure stays on the strip until the same work later succeeds or the turn ends.
     if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
     turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+    const hist = histories[act.role];
+    if (hist) { hist.push({ tool: act.tool, label: act.label, ok: act.ok, seconds: act.endT - act.startT, model: act.model, endT: act.endT }); if (hist.length > 12) hist.shift(); }
+    sessCount.calls++; if (!act.ok) sessCount.failed++;
     if (act.ship && act.ok) {
       ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
       setBubble(a, 'star', 2);
@@ -1076,12 +1116,19 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const m = ensureMission(), old = new Map(m.tasks.map(t => [t.id, t])), had = m.tasks.length;
     m.tasks = list.slice(0, 24).map(c => {
       const prev = old.get(c.id), state = c.status === 'completed' ? 'done' : c.status === 'in_progress' ? 'working' : 'queued';
-      return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
+      return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0,
+        // when it went in progress and when it was done: who worked on it is read off the crew's history
+        startedT: prev && prev.startedT != null ? prev.startedT : state !== 'queued' ? simT : null,
+        doneT: state === 'done' ? (prev && prev.doneT != null ? prev.doneT : simT) : null };
     });
     if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
     if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); gatherBriefing(); }
     touch(null);
   }
+
+  // ---- history: each crew member's recent calls (across turns), session counts ----
+  const histories = { lead: [], research: [], design: [], build: [], review: [], qa: [] };
+  const sessCount = { calls: 0, failed: 0 };
 
   // ---- tokens: summed from each model request's usage as it finishes ----
   // Never estimated mid-stream. roleTok splits each request's NEW tokens
@@ -1625,10 +1672,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const briefing = !!m && (m.phase === 'huddle' || m.phase === 'present');
     if (briefing && simT - m.startT < 3) { want(BOARD); return; }
     const busy = a => a.state === 'toWork' || a.state === 'delivering' || !!a.duet || (a.state === 'working' && a.runCount > 0);
-    if (focus && (simT - focusT < 4 || busy(focus))) {
+    // The boardroom is for planning: outside a briefing, Zorya's own tool calls
+    // and thinking do not pull the camera there (the strip still shows them).
+    if (focus && !(focus.role === 'lead' && !briefing) && (simT - focusT < 4 || busy(focus))) {
       const a = focus;
       // Heading to work: the desk's room. Carrying a hand-off or a bug: follow them.
-      const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
+      const r = a.state === 'toWork' || a.state === 'working' ? roomOf(stationOf(a).x) : roomOf(a.x);
       const vs = startFor(directorRoom);
       if (r >= vs && r < vs + zoom) return;
       // Crew moves between rooms instantly (door-pop), so a fresh event cuts at once.
@@ -1638,6 +1687,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (briefing) { want(BOARD); return; }
     const score = new Array(ROOMS).fill(0);
     for (const a of agents) score[roomOf(a.x)] += a.duet ? 4 : a.state === 'working' || a.state === 'toWork' ? 1.2 : a.path.length ? 0.4 : 0.15;
+    score[BOARD] = 0;
     let best = directorRoom; for (let r = 0; r < ROOMS; r++) if (score[r] > score[best]) best = r;
     if (best !== directorRoom && directorDwell > 3.5 && score[best] > score[directorRoom] + 0.9) { directorRoom = best; directorDwell = 0; }
   }
@@ -1663,12 +1713,25 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // its model's colour, with a thought bubble while its request is open.
   // Open office: the crew works here, and each desk monitor shows that crew
   // member's tokens this turn (see stepDone for how they are attributed).
+  // ---- replay: the outside events of the latest task, with their times ----
+  // A replay feeds them, in order, to a second office (hooks module).
+  const replayLog = [];
+  function recordEvent(name, args) {
+    if (name === 'startMission') replayLog.length = 0;
+    let copy;
+    try { copy = JSON.parse(JSON.stringify(args)); } catch (_) { return; }
+    replayLog.push({ t: simT, name, args: copy });
+    if (replayLog.length > 5000) replayLog.shift();
+  }
+
   // ---- pinned rooms ----
   // In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
   // when they are not neighbours; free slots follow the camera (auto, manual or
   // a followed crew member). With nothing pinned, the view is the usual run of
   // neighbouring rooms.
   const pinned = [];
+  // Split view: the free slot shows the work room (the town hall during a ship), not wherever the camera goes.
+  const viewLock = { work: false };
   function togglePin(r) {
     r = clamp(r, 0, ROOMS - 1);
     const i = pinned.indexOf(r);
@@ -1680,7 +1743,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   /** The rooms in view, left to right, or null for the usual run of neighbours. */
   function viewSlots() {
     if (zoom < 2 || !pinned.length) return null;
-    const slots = pinned.slice(-zoom), t = camTarget();
+    const slots = pinned.slice(-zoom), work = roomOf(STATIONS.build.x);
+    // The camera wanting a room already pinned (Zorya in the pinned boardroom)
+    // leaves the free slot on the work, not on the pinned room's neighbour.
+    let t = camTarget();
+    if (viewLock.work && !selectedId) t = hallEvent() ? TOWN : work;
+    if (slots.includes(t) && !slots.includes(work)) t = work;
     for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
       for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
     }
@@ -1746,11 +1814,36 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const pct = String(Math.min(99, Math.round(f * 100)));
     drawText(ctx, pct, x + 1 + Math.floor((7 - textW(pct)) / 2), y + 24, col);
   }
+  // The boardroom screen has three pages, flipped from the pane: this turn, the
+  // session so far, and the plan's usage (as Claude Code reports it).
+  const screen = { page: 'turn' };
+  const planUsage = { windows: [], usd: null };
   function drawKpis(S) {
     const k = kpiInfo(), fg = '#a8e6ff', dim = '#5a8ab8';
     let x = S.x + 2, y = S.y + 2;
     const seg = (s, c) => { drawText(ctx, s, x, y, c); x += textW(s) + 4; };
     const row = () => { x = S.x + 2; y += 7; };
+    const right = (str, c) => drawText(ctx, str, S.x + S.w - 2 - textW(str), y, c);
+    if (screen.page === 'session') {
+      const tin = sessTok.input + sessTok.cacheRead + sessTok.cacheCreate;
+      seg('IN', dim); seg(tokShort(tin), fg); seg('OUT', dim); seg(tokShort(sessTok.output), fg); row();
+      seg('CALLS', dim); seg(String(sessCount.calls), fg); if (sessCount.failed) { seg('FAIL', dim); seg(String(sessCount.failed), '#ff6b6b'); } row();
+      seg('REQ', dim); seg(String(sessTok.requests), fg); right('SESSION', '#f4b942'); row();
+      seg('OPEN', dim); seg(clockShort(simT), fg);
+      return;
+    }
+    if (screen.page === 'plan') {
+      seg('PLAN', '#f4b942'); if (planUsage.usd !== null) right('$' + planUsage.usd.toFixed(2), fg); row();
+      if (!planUsage.windows.length) { seg(planUsage.usd === null ? 'NO DATA YET' : 'API KEY', dim); return; }
+      for (const w of planUsage.windows.slice(0, 3)) {
+        const pct = Math.max(0, Math.min(100, w.pct)), col = pct >= 95 ? '#ff6b6b' : pct >= 80 ? '#f4b942' : '#78d98e';
+        seg(w.label, dim); seg(`${Math.round(pct)}%`, fg);
+        const bw = S.x + S.w - 3 - x;
+        if (bw > 6) { rect(ctx, x, y + 1, bw, 3, '#16365e'); rect(ctx, x, y + 1, Math.round(bw * pct / 100), 3, col); }
+        row();
+      }
+      return;
+    }
     seg('IN', dim); seg(tokShort(k.tokensIn), fg); seg('OUT', dim); seg(tokShort(k.tokensOut), fg); row();
     seg('CALLS', dim); seg(String(k.calls), fg);
     if (k.failed) { seg('FAIL', dim); seg(String(k.failed), '#ff6b6b'); }
@@ -1839,7 +1932,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function snapshotAll() {
     return {
-      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, sessTok, ctxInfo, mission, focus, lastEnded, flickers, antennas]),
+      graph: saveGraph([agents, npcs, particles, hall, acts, logRing, turnCalls, machines, turnTok, roleTok, sessTok, ctxInfo, histories, sessCount, mission, focus, lastEnded, flickers, antennas]),
       v: { simT, visT, mission, missionSeq, selectedId, confettiAcc, lastEventT, focus, focusT, lastEnded, lastAnnounce, turnOpen, turnT0, turnEndT, turnReason, mainStepOpen, thinkT0, camX, manualRoom, autoCam, directorRoom, directorT, directorDwell, stepAccUs },
     };
   }
@@ -1923,7 +2016,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     switch (a.state) {
       case 'working':
         return a.runCount > 0 && a.act ? `${a.act.tool}${a.act.label ? ' · ' + a.act.label : ''}` : `Finishing ${a.act ? a.act.tool : 'up'}`;
-      case 'toWork': { const r = ROOM_NAMES[roomOf(STATIONS[a.role].x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
+      case 'toWork': { const r = ROOM_NAMES[roomOf(stationOf(a).x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
       case 'delivering': return a.delivery.kind === 'rework' ? `Taking the ${a.delivery.from.title} to ${a.delivery.to.name}` : `Bringing work to ${a.delivery.to.name}`;
       case 'break': return a.breakSpot ? a.breakSpot.where : 'On a break';
       case 'meeting': return !m ? 'In the boardroom' : m.phase === 'huddle' ? 'Walking to the briefing' : m.phase === 'present' ? (a.role === 'lead' ? 'Presenting the plan' : 'In the briefing') : m.phase === 'wrap' ? 'Heading to the town hall' : m.phase === 'demo' ? (a.role === 'lead' ? 'Demoing on stage' : 'On stage at the town hall') : 'At the town hall';
@@ -1935,6 +2028,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function phaseText() {
     const m = mission;
     if (isThinking() && (!m || m.phase === 'execute')) return 'Thinking';
+    if (planInfo.on && m && (m.phase === 'huddle' || m.phase === 'present' || m.phase === 'execute')) return 'Planning (plan mode)';
     if (!m) return idleMode() ? 'Idle' : 'Working';
     if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
     const done = m.tasks.filter(t => t.state === 'done').length;
@@ -1999,7 +2093,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
     const list = all.slice(0, MAX_MACHINES).map(m => ({
       key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
-      color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId,
+      color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '',
       seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
     }));
     return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
@@ -2018,6 +2112,21 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function contextInfo() {
     const c = ctxInfo;
     return { tokens: c.tokens, window: c.window, percent: c.tokens !== null && c.window ? Math.min(100, Math.round(c.tokens / c.window * 100)) : null, compacting: c.compacting };
+  }
+  function cardsInfo() {
+    const m = mission; if (!m) return [];
+    return m.tasks.map(t => {
+      const from = t.startedT, to = t.doneT != null ? t.doneT : simT, who = [];
+      if (from != null) for (const a of agents) {
+        const busy = (histories[a.role] || []).some(h => h.endT >= from && h.endT - h.seconds <= to) || [...acts.values()].some(x => x.role === a.role && x.startT <= to);
+        if (busy) who.push(a.name);
+      }
+      return { id: t.id, title: t.title, state: t.state, seconds: from == null ? 0 : to - from, workers: who };
+    });
+  }
+  function historyOf(id) {
+    const a = agents.find(x => x.id === id); if (!a) return [];
+    return (histories[a.role] || []).slice().reverse().map(h => ({ ...h, model: h.model ? shortModel(h.model) : '', ago: simT - h.endT }));
   }
   function toolRole(id) {
     const x = acts.get(id) || turnCalls.find(c => c.id === id);
@@ -2044,6 +2153,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   for (const a of agents) { const [c, g] = makeCanvas(13, 20); paintSprite(g, 1, 3, 0, 'down', 'down', 0, a, false, false); crewSprites[a.id] = c; }
 
   const E = external;
+  // An outside event that a replay plays again (presses and settings are not).
+  const R = (name, f) => E((...args) => { recordEvent(name, args); return f(...args); });
   return {
     advance, render, film, camPath,
     get version() { return version; },
@@ -2056,9 +2167,15 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     setTheme: k => { if (THEMES[k] && k !== themeKey) E(applyTheme)(k); },
     setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
-    startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-    turnStart: E(turnStart), markWaiting: E(markWaiting), machineSeed: E(machineSeed), stepDone: E(stepDone), kpis: kpiInfo,
-    setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+    startMission: R('startMission', startMission), toolStart: R('toolStart', toolStart), toolEnd: R('toolEnd', toolEnd), handoff: R('handoff', handoff), bug: R('bug', bug), turnEnd: R('turnEnd', turnEnd), setCards: R('setCards', setCards),
+    turnStart: R('turnStart', turnStart), markWaiting: R('markWaiting', markWaiting), machineSeed: R('machineSeed', machineSeed), stepDone: R('stepDone', stepDone), kpis: kpiInfo,
+    // recorded only when it changes: every classic event reports the mode
+    setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
+    lockWorkSlot: E(on => { viewLock.work = !!on; }),
+    setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
+    cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },
+    setScreenPage: E(p => { if (p === 'turn' || p === 'session' || p === 'plan') screen.page = p; }), get screenPage() { return screen.page; },
+    setPlanUsage: E(u => { planUsage.windows = (u && u.windows || []).map(w => ({ label: String(w.label), pct: +w.pct || 0 })); planUsage.usd = u && Number.isFinite(+u.usd) && u.usd !== null ? +u.usd : null; }), machineStep: R('machineStep', machineStep), machineStepEnd: R('machineStepEnd', machineStepEnd), machineDone: R('machineDone', machineDone), machineInfo: R('machineInfo', machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },
   };

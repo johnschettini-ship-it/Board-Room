@@ -67,7 +67,8 @@ function startMission(text) {
     a.danceUntil = 0; a.partyPair = null; a.pairTask = null;
     if (a.duet || a.delivery || a.runCount > 0 || a.workUntil > simT) continue;
     a.breakDone = 0; a.breakSpot = null;
-    const st = STATIONS[a.role];
+    const st = stationOf(a);
+    if (planInfo.on) { if (Math.hypot(a.x - st.x, a.y - st.y) > 6) popTo(a, st); a.state = 'meeting'; a.arrived = true; continue; }
     if (a.state === 'break' || a.state === 'meeting' || Math.hypot(a.x - st.x, a.y - st.y) > 6) { a.state = 'idle'; popTo(a, st); }
   }
   log(`Reception logged a new request: "${title}". ${agentByRole.lead.name} is thinking it over.`, 'lead');
@@ -140,7 +141,7 @@ function phaseUpdate(dt) {
     case 'huddle': if (agents.every(a => a.arrived) || tIn > 8) setPhase('present'); break;
     case 'present':
       m.cardsShown = Math.min(m.tasks.length, Math.floor(tIn / (BEAT * 0.75)));
-      if (tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
+      if (!planInfo.on && tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
       break;
     case 'execute': if (m.wrapPending) setPhase('wrap'); break;
     case 'wrap': if (agents.every(a => a.arrived) || tIn > 8) setPhase('demo'); break;
@@ -156,9 +157,44 @@ function thinkTick() {
   const nova = agentByRole.lead;
   if (!nova.duet && (!nova.bubble || visT > nova.bubble.until - 0.2)) setBubble(nova, 'think', 2.5);
 }
+// ---- plan mode: the crew plans in the boardroom ----
+// While Claude Code is in plan mode the crew meets at the boardroom table and
+// does its research there; when the plan is approved (or the mode changes)
+// everyone goes to their desks. Set only by outside events (hooks).
+const planInfo = { on: false };
+const stationOf = a => (planInfo.on && a.meetSeat ? a.meetSeat : STATIONS[a.role]);
+function setPlanMode(on) {
+  on = !!on;
+  if (on === planInfo.on) return;
+  planInfo.on = on;
+  const m = ensureMission();
+  if (on) {
+    const seats = shuffle(SEATS.slice()); let si = 0;
+    for (const a of agents) {
+      a.meetSeat = a.role === 'lead' ? PRESENT_SPOT : seats[si++];
+      if (a.duet || a.delivery) continue;
+      a.danceUntil = 0; a.partyPair = null; a.breakDone = 0; a.breakSpot = null;
+      if (a.runCount > 0) { startWork(a); continue; } // working: carries on at the table
+      a.deliveries = []; a.state = 'meeting'; a.arrived = false;
+      popTo(a, a.meetSeat, () => { a.arrived = true; });
+    }
+    m.briefed = true;
+    if (m.phase === 'execute' || m.phase === 'done') setPhase('huddle');
+    log('Plan mode: the crew meets in the boardroom to plan.', 'lead');
+    directorDwell = 99;
+  } else {
+    for (const a of agents) {
+      a.meetSeat = null;
+      if (a.runCount > 0 && !a.duet && !a.delivery) startWork(a); // to their desks
+    }
+    if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
+    log('Plan approved: the crew heads to their desks.', 'lead');
+  }
+  touch(null);
+}
 function startWork(a) {
   a.state = 'toWork'; a.arrived = true; a.breakDone = 0; a.breakSpot = null; a.danceUntil = 0; a.partyPair = null;
-  popTo(a, STATIONS[a.role], () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
+  popTo(a, stationOf(a), () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
 }
 function finishWork(a) {
   a.state = 'idle'; a.idleT = 0; a.workProg = 0;
@@ -176,10 +212,10 @@ function think(a, dt) {
   if (a.workUntil > simT) { startWork(a); return; }
   if (m && hallEvent() && a.hallMission !== m.id) { joinHall(a); return; }
   if (a.state === 'break') {
-    if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, STATIONS[a.role]); }
+    if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, stationOf(a)); }
     return;
   }
-  const st = STATIONS[a.role];
+  const st = stationOf(a);
   if (!a.path.length && (Math.abs(a.x - st.x) > 1 || Math.abs(a.y - st.y) > 1)) { popTo(a, st); return; }
   if (a.path.length) return;
   if (!idleMode()) { a.idleT = 0; return; }
@@ -225,10 +261,11 @@ function toolStart(id, role, tool, label, extra) {
   // The run that asked for the call (main loop or a subagent) and so its model.
   const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
   const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
+  if (mm) mm.lastTool = act.tool + (act.label ? ' ' + act.label : '');
   acts.set(id, act);
   if (!turnOpen) turnStart();
   // The first real work ends the briefing: the crew goes to its desks.
-  if (mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
+  if (!planInfo.on && mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
   if (a.runCount === 0 && !(a.workUntil > simT)) { a.spellT0 = simT; a.workProg = 0; setBubble(a, ROLES[a.role].icon); }
   a.runCount++; a.workUntil = Infinity; a.act = act; a.danceUntil = 0; a.partyPair = null;
   touch(a);
@@ -246,6 +283,9 @@ function toolEnd(id, ok) {
   // A failure stays on the strip until the same work later succeeds or the turn ends.
   if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
   turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+  const hist = histories[act.role];
+  if (hist) { hist.push({ tool: act.tool, label: act.label, ok: act.ok, seconds: act.endT - act.startT, model: act.model, endT: act.endT }); if (hist.length > 12) hist.shift(); }
+  sessCount.calls++; if (!act.ok) sessCount.failed++;
   if (act.ship && act.ok) {
     ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
     setBubble(a, 'star', 2);
@@ -327,12 +367,19 @@ function setCards(list) {
   const m = ensureMission(), old = new Map(m.tasks.map(t => [t.id, t])), had = m.tasks.length;
   m.tasks = list.slice(0, 24).map(c => {
     const prev = old.get(c.id), state = c.status === 'completed' ? 'done' : c.status === 'in_progress' ? 'working' : 'queued';
-    return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
+    return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0,
+      // when it went in progress and when it was done: who worked on it is read off the crew's history
+      startedT: prev && prev.startedT != null ? prev.startedT : state !== 'queued' ? simT : null,
+      doneT: state === 'done' ? (prev && prev.doneT != null ? prev.doneT : simT) : null };
   });
   if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
   if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); gatherBriefing(); }
   touch(null);
 }
+
+// ---- history: each crew member's recent calls (across turns), session counts ----
+const histories = { lead: [], research: [], design: [], build: [], review: [], qa: [] };
+const sessCount = { calls: 0, failed: 0 };
 
 // ---- tokens: summed from each model request's usage as it finishes ----
 // Never estimated mid-stream. roleTok splits each request's NEW tokens

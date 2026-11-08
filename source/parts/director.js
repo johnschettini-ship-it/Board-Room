@@ -9,10 +9,12 @@ function directorTick(dt) {
   const briefing = !!m && (m.phase === 'huddle' || m.phase === 'present');
   if (briefing && simT - m.startT < 3) { want(BOARD); return; }
   const busy = a => a.state === 'toWork' || a.state === 'delivering' || !!a.duet || (a.state === 'working' && a.runCount > 0);
-  if (focus && (simT - focusT < 4 || busy(focus))) {
+  // The boardroom is for planning: outside a briefing, Zorya's own tool calls
+  // and thinking do not pull the camera there (the strip still shows them).
+  if (focus && !(focus.role === 'lead' && !briefing) && (simT - focusT < 4 || busy(focus))) {
     const a = focus;
     // Heading to work: the desk's room. Carrying a hand-off or a bug: follow them.
-    const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
+    const r = a.state === 'toWork' || a.state === 'working' ? roomOf(stationOf(a).x) : roomOf(a.x);
     const vs = startFor(directorRoom);
     if (r >= vs && r < vs + zoom) return;
     // Crew moves between rooms instantly (door-pop), so a fresh event cuts at once.
@@ -22,6 +24,7 @@ function directorTick(dt) {
   if (briefing) { want(BOARD); return; }
   const score = new Array(ROOMS).fill(0);
   for (const a of agents) score[roomOf(a.x)] += a.duet ? 4 : a.state === 'working' || a.state === 'toWork' ? 1.2 : a.path.length ? 0.4 : 0.15;
+  score[BOARD] = 0;
   let best = directorRoom; for (let r = 0; r < ROOMS; r++) if (score[r] > score[best]) best = r;
   if (best !== directorRoom && directorDwell > 3.5 && score[best] > score[directorRoom] + 0.9) { directorRoom = best; directorDwell = 0; }
 }

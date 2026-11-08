@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.7.1",
+  "version": "0.9.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -78,6 +78,27 @@
         "slow",
         "normal",
         "fast"
+      ]
+    },
+    "view": {
+      "type": "string",
+      "title": "Start-up view",
+      "description": "split: two rooms, the Boardroom pinned beside the room where the work is (Open office while working, Town hall when shipping). single: one room, the camera follows the work and visits the Boardroom only for briefings.",
+      "default": "split",
+      "options": [
+        "split",
+        "single"
+      ]
+    },
+    "quickActions": {
+      "type": "string",
+      "title": "Quick actions",
+      "description": "Buttons in the pane for common requests (Run tests, Review, Commit, Status). off: no buttons. fill: a button puts its request in the prompt box, after your draft; you press Enter. send: a button sends its request to Claude at once.",
+      "default": "off",
+      "options": [
+        "off",
+        "fill",
+        "send"
       ]
     }
   }

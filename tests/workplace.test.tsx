@@ -30,10 +30,12 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('ui.invalidate', () => { counts.invalidate++; return { value: undefined } })
   on('audio.play', () => { counts.audio++; return { value: undefined } })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => { sent.push(e.text); return { text: e.text } })
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('classic.UserPromptSubmit', () => ({}))
   on('classic.PreCompact', () => ({}))
   on('classic.PostCompact', () => ({}))
   on('ui.status', () => ({ value: undefined }))
@@ -58,7 +60,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
-  return { clock, panes, counts, hold, step, perm, agents }
+  return { clock, panes, counts, hold, step, perm, agents, sent }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,7 +76,7 @@ async function crew($: any): Promise<string> {
 const line = (summary: string, name: string): string => summary.split('\n').find(l => l.startsWith(name + ' ')) ?? ''
 const turnDone = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' as const }
 
-test('1. the pane opens at start and shows the office within 2 s, on every surface', async ($, on) => {
+test('1. the pane opens at start and shows the office within 2 s, on every surface', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   const t0 = performance.now()
   await start($)
@@ -401,10 +403,13 @@ test('sub-agent launch plays a hand-off duet from Zorya', async ($, on) => {
   expect(line(s, 'Zorya')).toMatch(/duet nova->pax \(handoff\)/)
 })
 
-test('room tabs, zoom, auto camera, follow and sound respond to presses', async ($, on) => {
+test('room tabs, zoom, auto camera, follow and sound respond to presses', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   await start($)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'rooms-more' }) // the Kitchen is behind "+N rooms"
+  await ui.unmount()
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'room-7' })
   await w.clock.advance(1000)
   expect(await crew($)).toContain('View: Kitchen, 1 room(s), auto camera off')
@@ -732,7 +737,7 @@ test('a subscription sees its plan windows, never dollars; an API key sees dolla
   expect(s).toContain('API · $1.23 this session · 21.5k tokens since the office opened')
 })
 
-test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', async ($, on) => {
+test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on)
   await start($)
   const svgOf = async (u: { find(q: object): Promise<{ props: { source?: unknown } } | undefined> }) => String((await u.find({ type: 'Svg' }))?.props.source ?? '')
@@ -764,7 +769,7 @@ test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to t
   await ui3.unmount()
 })
 
-test('when the camera moves to a nearby room, the desktop film slides instead of cutting', async ($, on) => {
+test('when the camera moves to a nearby room, the desktop film slides instead of cutting', { options: { view: 'single' } }, async ($, on) => {
   const w = world(on, true, undefined, ['desktop'])
   await start($)
   await $.prompt.submit(prompt('Plan, then read'))
@@ -813,5 +818,276 @@ test('after a restart in the middle of a turn, the ticker clock runs from the tu
   await $.tool.call({ tool: 'Read', file_path: '/a/x.ts' })
   await w.clock.advance(3000)
   expect(await crew($)).toMatch(/^Phase: Working · T\+00:0[234]/m) // was stuck at T+00:00
+})
+
+test('the standard view: the boardroom pinned beside the work; it shows the town hall for a ship', async ($, on) => {
+  const w = world(on)
+  await start($)
+  let s = await crew($)
+  expect(s).toContain('2 room(s), pinned Boardroom')
+  await $.prompt.submit(prompt('Work'))
+  await $.tool.call({ tool: 'mcp__browser__computer' } as never) // Zorya's own tool: no pull to the boardroom
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' })
+  await w.clock.advance(2000)
+  s = await crew($)
+  expect(s).toMatch(/View: Boardroom \+ Open office, 2 room\(s\), pinned Boardroom/)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('viewBox="0 0 480 176"')
+  await ui.unmount()
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
+  await $.turn.complete(turnDone as never)
+  for (let i = 0; i < 40 && !/View: Town hall/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
+  expect(s).toMatch(/View: Town hall \+ Boardroom, 2 room\(s\), pinned Boardroom/)
+})
+
+test('in plan mode the crew meets in the boardroom and researches there; an approved plan sends them to their desks', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Plan the refactor'))
+  await $.classic.UserPromptSubmit({ prompt: 'Plan the refactor', permission_mode: 'plan' } as never)
+  await w.clock.advance(1500)
+  let s = await crew($)
+  expect(s).toContain('Phase: Planning (plan mode)')
+  expect(s).toContain('Plan mode: the crew meets in the boardroom to plan.')
+  for (const name of ['Zorya', 'Qix', 'Lumi', 'Brix', 'Vex', 'Pip']) expect(line(s, name)).toContain(' · Boardroom')
+  // research during plan mode happens at the table
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(line(s, 'Qix')).toMatch(/(Heading to the boardroom|Read · a\.ts|Finishing Read) · Boardroom/) // to his seat at the table, not his desk
+  expect(s).toContain('Phase: Planning (plan mode)')
+  // the plan is approved
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'Do it' } as never)
+  await w.clock.advance(2500)
+  s = await crew($)
+  expect(s).toContain('Plan approved: the crew heads to their desks.')
+  for (const name of ['Qix', 'Lumi', 'Brix', 'Vex', 'Pip']) expect(line(s, name)).toContain(' · Open office')
+})
+
+test('the split view keeps the work room in its second slot, even when the crew wanders off', { options: { openOnStart: false } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Hi'))
+  await $.turn.complete(turnDone as never)
+  for (let i = 0; i < 20; i++) await w.clock.advance(5000) // 100 s: the crew takes breaks
+  const s = await crew($)
+  expect(s).toMatch(/Kitchen|lounge|reception|phone booth/i)
+  expect(s).toMatch(/View: Boardroom \+ Open office, 2 room\(s\), pinned Boardroom/)
+})
+
+// ---- interactive pane ----
+type Mounted = { unmount(): Promise<void>; press(q: object): Promise<unknown>; find(q: object): Promise<{ props: Record<string, unknown> } | undefined> }
+/** The test kit keeps the tree it mounted: mount again to read it after a press. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function remount($: any, ui: Mounted, surface = 'desktop'): Promise<Mounted> {
+  await ui.unmount()
+  return $.ui.mount({ ...PANE, surface })
+}
+
+test('the tab row shows the three work rooms and "+N rooms" for the rest', async ($, on) => {
+  world(on)
+  await start($)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    let ui: Mounted = await $.ui.mount({ ...PANE, surface })
+    for (const r of [1, 3, 5]) expect(await ui.find({ type: 'Button', key: `room-${r}` })).toBeDefined()
+    for (const r of [0, 2, 4, 6, 7, 8]) expect(await ui.find({ type: 'Button', key: `room-${r}` })).toBeUndefined()
+    await ui.press({ key: 'rooms-more' })
+    ui = await remount($, ui, surface)
+    for (const r of [0, 2, 4, 6, 7, 8]) expect(await ui.find({ type: 'Button', key: `room-${r}` })).toBeDefined()
+    await ui.press({ key: 'rooms-more' }) // "Fewer rooms"
+    await ui.unmount()
+  }
+})
+
+test('following a crew member opens their recent calls, newest first', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Look around'))
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'Grep', pattern: 'TODO' })
+  await w.clock.advance(1000)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /recent calls/ })).toBeUndefined()
+  await ui.press({ key: 'crew-pax' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: "Qix's recent calls" })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^✓ Grep TODO · 0:00 · / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^✓ Read a\.ts · 0:00 · / })).toBeDefined()
+  await ui.press({ key: 'crew-pax' }) // unfollow: the list closes
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /recent calls/ })).toBeUndefined()
+  // a failed call is marked, and the history outlives the turn
+  await $.tool.call({ tool: 'Bash', command: 'npm test -- fail' })
+  await $.turn.complete(turnDone as never)
+  await $.prompt.submit(prompt('Next'))
+  await ui.press({ key: 'crew-dot' })
+  ui = await remount($, ui, 'terminal')
+  expect(await ui.find({ type: 'Text', text: "Pip's recent calls" })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^✗ Bash npm test/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a compute row opens its agent: task, type, model, requests, tokens and last tool', async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.agents.push({ id: 'a1', type: 'Explore', description: 'Find the hooks API', status: 'running' })
+  await $.prompt.submit(prompt('Find the hooks'))
+  await $.turn.start({ text: 'Find the hooks', turnId: 't1' } as never)
+  const sub = await stepOpen($, w, 'a1')
+  await $.tool.call({ tool: 'Read', file_path: '/w/hooks.ts', agentId: 'a1' } as never)
+  await w.clock.advance(500)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'agent-a1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Last tool/ })).toBeUndefined()
+  await ui.press({ key: 'agent-a1' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: '    Task: Find the hooks API' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^    Type Explore · model opus 5\.5 · effort high · running 0:0\d$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '    1 request · no tokens reported yet' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '    Last tool: Read hooks.ts' })).toBeDefined()
+  await sub()
+  await $.turn.complete({ ...turnDone, agentId: 'a1', usage: usage('claude-opus-5-5', 1200, 300), durationMs: 4000 } as never)
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: '    1 request · 10.2k in (9.0k cached) · 300 out' })).toBeDefined()
+  await ui.press({ key: 'agent-a1' }) // closes
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /Last tool/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the screen button flips the boardroom screen: turn, session, plan usage', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.session.measure({ context: { window: 200000 }, rateLimits: [{ kind: 'five_hour', percentUsed: 42 }, { kind: 'seven_day', percentUsed: 81 }], changed: ['rateLimits'] } as never)
+  const svgOf = async (u: Mounted) => String((await u.find({ type: 'Svg' }))?.props.source ?? '')
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'screen' })).toBeDefined()
+  expect(await crew($)).toContain('· screen Turn')
+  const turnPicture = await svgOf(ui)
+  await ui.press({ key: 'screen' })
+  expect(await crew($)).toContain('· screen Session')
+  await ui.press({ key: 'screen' })
+  expect(await crew($)).toContain('· screen Plan')
+  await w.clock.advance(250)
+  ui = await remount($, ui)
+  expect(await svgOf(ui)).not.toBe(turnPicture) // the screen shows another page
+  await ui.press({ key: 'screen' })
+  expect(await crew($)).toContain('· screen Turn')
+  await ui.unmount()
+})
+
+test('plan cards open from the ticker: state, time in progress and who was busy meanwhile', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Port the page'))
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Read the page', status: 'in_progress', activeForm: 'Reading' }, { content: 'Port it', status: 'pending', activeForm: 'Porting' }] } as never)
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'Read', file_path: '/w/page.html' })
+  await w.clock.advance(2000)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'plan-todo-0' })).toBeUndefined()
+  await ui.press({ key: 'plan' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: '● Read the page' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '○ Port it' })).toBeDefined()
+  await ui.press({ key: 'plan-todo-0' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /^   In progress for 0:0[23] · busy meanwhile: .*Qix/ })).toBeDefined()
+  await ui.press({ key: 'plan-todo-1' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: '   Not started yet' })).toBeDefined()
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Read the page', status: 'completed', activeForm: 'Reading' }, { content: 'Port it', status: 'in_progress', activeForm: 'Porting' }] } as never)
+  await ui.press({ key: 'plan-todo-0' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: '✓ Read the page' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^   Done in 0:0\d · busy meanwhile: .*Qix/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('quick actions are off by default', async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'qa-tests' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('quick actions "fill" put the request in the prompt box, after the draft', { options: { quickActions: 'fill' } }, async ($, on) => {
+  world(on)
+  const fills: { text: string; mode?: string }[] = []
+  let draft = ''
+  on('prompt.read', () => ({ value: { text: draft, cursor: draft.length } as never }))
+  on('prompt.fill', (_, e) => { fills.push({ text: e.text, mode: e.mode }); return { isFilled: true } })
+  await start($)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'qa-tests' })
+  expect(fills.at(-1)).toEqual({ text: "Run the project's tests and report what fails.", mode: 'replace' })
+  draft = 'Also check'
+  ui = await remount($, ui)
+  await ui.press({ key: 'qa-review' })
+  expect(fills.at(-1)).toEqual({ text: ' Review the changes so far for bugs and risks.', mode: 'append' })
+  expect(await crew($)).toContain('Phase: Idle') // nothing was sent
+  await ui.unmount()
+})
+
+test('quick actions "send" send the request to Claude', { options: { quickActions: 'send' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: 'Send to Claude:' })).toBeDefined()
+  await ui.press({ key: 'qa-status' })
+  await w.clock.advance(250)
+  expect(w.sent).toEqual(['Summarize what is done and what remains.'])
+  const s = await crew($)
+  expect(s).toContain('"Summarize what is done and what remains."')
+  expect(s).not.toContain('Phase: Idle')
+  await ui.unmount()
+})
+
+test('replay plays the latest task again in a second office, then goes back to live', { options: { view: 'single' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Button', key: 'replay' })).toBeUndefined() // nothing to replay yet
+  await $.prompt.submit(prompt('Fix the bug'))
+  await w.clock.advance(1000)
+  await $.tool.call({ tool: 'Read', file_path: '/w/bug.ts' })
+  await w.clock.advance(30000) // a long pause: shortened in the replay
+  await $.tool.call({ tool: 'Edit', file_path: '/w/bug.ts', old_string: 'a', new_string: 'b' } as never)
+  await $.turn.complete(turnDone as never)
+  await w.clock.advance(1000)
+  ui = await remount($, ui)
+  await ui.press({ key: 'replay' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /^Replaying "Fix the bug" · 0:00 \/ 0:0\d$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'replay' })).toBeUndefined()
+  // the live office is untouched; the status tool reports it, with the replay noted
+  let s = await crew($)
+  expect(s).toMatch(/replay playing 0:00\/0:0\d/)
+  expect(s).toMatch(/Phase: Done/)
+  // the replay's own crew: the pane's crew cards show the replay office
+  await w.clock.advance(1500)
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /Qix|Read/ })).toBeDefined()
+  await ui.press({ key: 'replay-pause' })
+  s = await crew($)
+  expect(s).toContain('replay paused')
+  const at = /replay paused (\d:\d\d)/.exec(s)![1]
+  await w.clock.advance(3000)
+  expect(await crew($)).toContain(`replay paused ${at}`) // a paused replay does not move
+  await ui.press({ key: 'replay-pause' })
+  for (let i = 0; i < 40; i++) await w.clock.advance(250)
+  s = await crew($)
+  expect(s).toMatch(/replay paused (\d:\d\d)\/\1/) // ran to its end and stopped there
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /^Replay finished/ })).toBeDefined()
+  await ui.press({ key: 'replay-live' })
+  expect(await crew($)).not.toContain('replay')
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Text', text: /^Replay/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'replay' })).toBeDefined()
+  await ui.unmount()
 })
 
