@@ -82,7 +82,7 @@ function ensureOffice(): Office {
       onSfx: kind => { if (soundOn && sfxQueue.length < 8) sfxQueue.push(kind) },
     })
     // The standard view: the boardroom pinned beside the room where the work is.
-    if (opts.view === 'split') { office.setZoom(2); office.togglePin(3) }
+    if (opts.view === 'split') { office.setZoom(2); office.togglePin(3); office.lockWorkSlot(true) }
   }
   return office
 }
@@ -599,7 +599,7 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
-    `View: ${s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
+    `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
     'Strip:',
     ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
@@ -713,6 +713,8 @@ export const register: Register = (on, options) => {
       const ran = await next(e)
       ok = ran.deny === undefined && ran.isError !== true
       try { after(route, tool, input, ran) } catch { /* never in the way of a tool */ }
+      // An approved plan ends plan mode (the next event will say so too).
+      if (tool === 'ExitPlanMode' && ok) { try { ensureOffice().setPlanMode(false) } catch { /* ignore */ } }
       return ran
     } finally {
       // Runs on success, failure and abort alike, so no crew member is left working.
@@ -788,6 +790,16 @@ export const register: Register = (on, options) => {
     }
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // Plan mode: every classic event reports the session's permission mode. A
+  // prompt or a tool call in plan mode starts the boardroom meeting; one in
+  // another mode ends it.
+  const planFrom = (e: unknown): void => {
+    const mode = (e as { permission_mode?: unknown }).permission_mode
+    if (typeof mode === 'string') { try { ensureOffice().setPlanMode(mode === 'plan') } catch { /* never in the way */ } }
+  }
+  on('classic.UserPromptSubmit', async ($, e, next) => { planFrom(e); return next(e) }).catch(($, e, next) => next(e))
+  on('classic.PreToolUse', async ($, e, next) => { planFrom(e); return next(e) }).catch(($, e, next) => next(e))
 
   // The permission dialog is about to show: that call is waiting on the person, not working.
   // A settings hook may decide first; only an undecided request reaches the

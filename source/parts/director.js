@@ -14,7 +14,7 @@ function directorTick(dt) {
   if (focus && !(focus.role === 'lead' && !briefing) && (simT - focusT < 4 || busy(focus))) {
     const a = focus;
     // Heading to work: the desk's room. Carrying a hand-off or a bug: follow them.
-    const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
+    const r = a.state === 'toWork' || a.state === 'working' ? roomOf(stationOf(a).x) : roomOf(a.x);
     const vs = startFor(directorRoom);
     if (r >= vs && r < vs + zoom) return;
     // Crew moves between rooms instantly (door-pop), so a fresh event cuts at once.

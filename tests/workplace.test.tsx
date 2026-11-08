@@ -34,6 +34,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('turn.complete', (_, e) => ({ text: e.answer }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('classic.UserPromptSubmit', () => ({}))
   on('classic.PreCompact', () => ({}))
   on('classic.PostCompact', () => ({}))
   on('ui.status', () => ({ value: undefined }))
@@ -825,13 +826,48 @@ test('the standard view: the boardroom pinned beside the work; it shows the town
   await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' })
   await w.clock.advance(2000)
   s = await crew($)
-  expect(s).toMatch(/View: Open office, 2 room\(s\), pinned Boardroom/)
+  expect(s).toMatch(/View: Boardroom \+ Open office, 2 room\(s\), pinned Boardroom/)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('viewBox="0 0 480 176"')
   await ui.unmount()
   await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
   await $.turn.complete(turnDone as never)
   for (let i = 0; i < 40 && !/View: Town hall/.test(s); i++) { await w.clock.advance(250); s = await crew($) }
-  expect(s).toMatch(/View: Town hall, 2 room\(s\), pinned Boardroom/)
+  expect(s).toMatch(/View: Town hall \+ Boardroom, 2 room\(s\), pinned Boardroom/)
+})
+
+test('in plan mode the crew meets in the boardroom and researches there; an approved plan sends them to their desks', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Plan the refactor'))
+  await $.classic.UserPromptSubmit({ prompt: 'Plan the refactor', permission_mode: 'plan' } as never)
+  await w.clock.advance(1500)
+  let s = await crew($)
+  expect(s).toContain('Phase: Planning (plan mode)')
+  expect(s).toContain('Plan mode: the crew meets in the boardroom to plan.')
+  for (const name of ['Zorya', 'Qix', 'Lumi', 'Brix', 'Vex', 'Pip']) expect(line(s, name)).toContain(' · Boardroom')
+  // research during plan mode happens at the table
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(line(s, 'Qix')).toMatch(/(Heading to the boardroom|Read · a\.ts|Finishing Read) · Boardroom/) // to his seat at the table, not his desk
+  expect(s).toContain('Phase: Planning (plan mode)')
+  // the plan is approved
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'Do it' } as never)
+  await w.clock.advance(2500)
+  s = await crew($)
+  expect(s).toContain('Plan approved: the crew heads to their desks.')
+  for (const name of ['Qix', 'Lumi', 'Brix', 'Vex', 'Pip']) expect(line(s, name)).toContain(' · Open office')
+})
+
+test('the split view keeps the work room in its second slot, even when the crew wanders off', { options: { openOnStart: false } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Hi'))
+  await $.turn.complete(turnDone as never)
+  for (let i = 0; i < 20; i++) await w.clock.advance(5000) // 100 s: the crew takes breaks
+  const s = await crew($)
+  expect(s).toMatch(/Kitchen|lounge|reception|phone booth/i)
+  expect(s).toMatch(/View: Boardroom \+ Open office, 2 room\(s\), pinned Boardroom/)
 })
 

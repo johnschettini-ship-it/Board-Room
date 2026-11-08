@@ -10,6 +10,8 @@
 // a followed crew member). With nothing pinned, the view is the usual run of
 // neighbouring rooms.
 const pinned = [];
+// Split view: the free slot shows the work room (the town hall during a ship), not wherever the camera goes.
+const viewLock = { work: false };
 function togglePin(r) {
   r = clamp(r, 0, ROOMS - 1);
   const i = pinned.indexOf(r);
@@ -25,6 +27,7 @@ function viewSlots() {
   // The camera wanting a room already pinned (Zorya in the pinned boardroom)
   // leaves the free slot on the work, not on the pinned room's neighbour.
   let t = camTarget();
+  if (viewLock.work && !selectedId) t = hallEvent() ? TOWN : work;
   if (slots.includes(t) && !slots.includes(work)) t = work;
   for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
     for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);

@@ -194,6 +194,11 @@ export interface Office {
   /** One model request finished: add its usage, split across the crew whose tools it asked for. */
   stepDone(key: string, usage: Partial<Usage> | null | undefined, roles: RoleId[]): void
   kpis(): Kpis
+  /** Claude Code's plan mode: the crew meets in the boardroom until it ends. */
+  setPlanMode(on: boolean): void
+  readonly planMode: boolean
+  /** Split view: the free slot stays on the work room (the town hall during a ship). */
+  lockWorkSlot(on: boolean): void
   /** A subagent the engine lists as running, before any of its requests is seen. */
   machineSeed(key: string, info: { type?: string; description?: string; parentId?: string | null }): void
   /** The main loop's context window: figures from the engine (window, and tokens when known). */

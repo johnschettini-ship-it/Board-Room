@@ -28,6 +28,8 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 - The pane opens when a session starts. Turn this off with the `openOnStart` setting.
 - **Standard view:** two rooms, the Boardroom pinned (◆) beside the room where the work is: the Open office while the crew works, the Town hall when work ships. Set `view` to `single` for one room with a camera that follows the work.
+- **Plan mode:** while Claude Code is in plan mode, the whole crew meets in the Boardroom and does its research at the table. When the plan is approved (or the mode changes) everyone goes to their desks.
+- The split view's second slot stays on the Open office (the Town hall during a ship), even when the crew takes a break elsewhere.
 - The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.

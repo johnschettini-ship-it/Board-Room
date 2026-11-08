@@ -816,7 +816,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       a.danceUntil = 0; a.partyPair = null; a.pairTask = null;
       if (a.duet || a.delivery || a.runCount > 0 || a.workUntil > simT) continue;
       a.breakDone = 0; a.breakSpot = null;
-      const st = STATIONS[a.role];
+      const st = stationOf(a);
+      if (planInfo.on) { if (Math.hypot(a.x - st.x, a.y - st.y) > 6) popTo(a, st); a.state = 'meeting'; a.arrived = true; continue; }
       if (a.state === 'break' || a.state === 'meeting' || Math.hypot(a.x - st.x, a.y - st.y) > 6) { a.state = 'idle'; popTo(a, st); }
     }
     log(`Reception logged a new request: "${title}". ${agentByRole.lead.name} is thinking it over.`, 'lead');
@@ -889,7 +890,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       case 'huddle': if (agents.every(a => a.arrived) || tIn > 8) setPhase('present'); break;
       case 'present':
         m.cardsShown = Math.min(m.tasks.length, Math.floor(tIn / (BEAT * 0.75)));
-        if (tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
+        if (!planInfo.on && tIn > BEAT * Math.max(6, m.tasks.length * 0.75 + 3)) setPhase(m.wrapPending ? 'wrap' : 'execute');
         break;
       case 'execute': if (m.wrapPending) setPhase('wrap'); break;
       case 'wrap': if (agents.every(a => a.arrived) || tIn > 8) setPhase('demo'); break;
@@ -905,9 +906,44 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const nova = agentByRole.lead;
     if (!nova.duet && (!nova.bubble || visT > nova.bubble.until - 0.2)) setBubble(nova, 'think', 2.5);
   }
+  // ---- plan mode: the crew plans in the boardroom ----
+  // While Claude Code is in plan mode the crew meets at the boardroom table and
+  // does its research there; when the plan is approved (or the mode changes)
+  // everyone goes to their desks. Set only by outside events (hooks).
+  const planInfo = { on: false };
+  const stationOf = a => (planInfo.on && a.meetSeat ? a.meetSeat : STATIONS[a.role]);
+  function setPlanMode(on) {
+    on = !!on;
+    if (on === planInfo.on) return;
+    planInfo.on = on;
+    const m = ensureMission();
+    if (on) {
+      const seats = shuffle(SEATS.slice()); let si = 0;
+      for (const a of agents) {
+        a.meetSeat = a.role === 'lead' ? PRESENT_SPOT : seats[si++];
+        if (a.duet || a.delivery) continue;
+        a.danceUntil = 0; a.partyPair = null; a.breakDone = 0; a.breakSpot = null;
+        if (a.runCount > 0) { startWork(a); continue; } // working: carries on at the table
+        a.deliveries = []; a.state = 'meeting'; a.arrived = false;
+        popTo(a, a.meetSeat, () => { a.arrived = true; });
+      }
+      m.briefed = true;
+      if (m.phase === 'execute' || m.phase === 'done') setPhase('huddle');
+      log('Plan mode: the crew meets in the boardroom to plan.', 'lead');
+      directorDwell = 99;
+    } else {
+      for (const a of agents) {
+        a.meetSeat = null;
+        if (a.runCount > 0 && !a.duet && !a.delivery) startWork(a); // to their desks
+      }
+      if (m.phase === 'huddle' || m.phase === 'present') setPhase('execute');
+      log('Plan approved: the crew heads to their desks.', 'lead');
+    }
+    touch(null);
+  }
   function startWork(a) {
     a.state = 'toWork'; a.arrived = true; a.breakDone = 0; a.breakSpot = null; a.danceUntil = 0; a.partyPair = null;
-    popTo(a, STATIONS[a.role], () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
+    popTo(a, stationOf(a), () => { if (a.state === 'toWork') { a.state = 'working'; a.workUntil = Math.max(a.workUntil, simT + MIN_WORK); } });
   }
   function finishWork(a) {
     a.state = 'idle'; a.idleT = 0; a.workProg = 0;
@@ -925,10 +961,10 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (a.workUntil > simT) { startWork(a); return; }
     if (m && hallEvent() && a.hallMission !== m.id) { joinHall(a); return; }
     if (a.state === 'break') {
-      if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, STATIONS[a.role]); }
+      if (!a.path.length && a.breakDone && simT >= a.breakDone) { a.breakDone = 0; a.breakSpot = null; a.state = 'idle'; goTo(a, stationOf(a)); }
       return;
     }
-    const st = STATIONS[a.role];
+    const st = stationOf(a);
     if (!a.path.length && (Math.abs(a.x - st.x) > 1 || Math.abs(a.y - st.y) > 1)) { popTo(a, st); return; }
     if (a.path.length) return;
     if (!idleMode()) { a.idleT = 0; return; }
@@ -977,7 +1013,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     acts.set(id, act);
     if (!turnOpen) turnStart();
     // The first real work ends the briefing: the crew goes to its desks.
-    if (mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
+    if (!planInfo.on && mission && (mission.phase === 'huddle' || mission.phase === 'present') && !mission.wrapPending) setPhase('execute');
     if (a.runCount === 0 && !(a.workUntil > simT)) { a.spellT0 = simT; a.workProg = 0; setBubble(a, ROLES[a.role].icon); }
     a.runCount++; a.workUntil = Infinity; a.act = act; a.danceUntil = 0; a.partyPair = null;
     touch(a);
@@ -1630,7 +1666,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (focus && !(focus.role === 'lead' && !briefing) && (simT - focusT < 4 || busy(focus))) {
       const a = focus;
       // Heading to work: the desk's room. Carrying a hand-off or a bug: follow them.
-      const r = a.state === 'toWork' || a.state === 'working' ? roomOf(STATIONS[a.role].x) : roomOf(a.x);
+      const r = a.state === 'toWork' || a.state === 'working' ? roomOf(stationOf(a).x) : roomOf(a.x);
       const vs = startFor(directorRoom);
       if (r >= vs && r < vs + zoom) return;
       // Crew moves between rooms instantly (door-pop), so a fresh event cuts at once.
@@ -1672,6 +1708,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // a followed crew member). With nothing pinned, the view is the usual run of
   // neighbouring rooms.
   const pinned = [];
+  // Split view: the free slot shows the work room (the town hall during a ship), not wherever the camera goes.
+  const viewLock = { work: false };
   function togglePin(r) {
     r = clamp(r, 0, ROOMS - 1);
     const i = pinned.indexOf(r);
@@ -1687,6 +1725,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     // The camera wanting a room already pinned (Zorya in the pinned boardroom)
     // leaves the free slot on the work, not on the pinned room's neighbour.
     let t = camTarget();
+    if (viewLock.work && !selectedId) t = hallEvent() ? TOWN : work;
     if (slots.includes(t) && !slots.includes(work)) t = work;
     for (let d = 0; slots.length < zoom && d < ROOMS; d++) {
       for (const r of d ? [t + d, t - d] : [t]) if (r >= 0 && r < ROOMS && !slots.includes(r) && slots.length < zoom) slots.push(r);
@@ -1930,7 +1969,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     switch (a.state) {
       case 'working':
         return a.runCount > 0 && a.act ? `${a.act.tool}${a.act.label ? ' · ' + a.act.label : ''}` : `Finishing ${a.act ? a.act.tool : 'up'}`;
-      case 'toWork': { const r = ROOM_NAMES[roomOf(STATIONS[a.role].x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
+      case 'toWork': { const r = ROOM_NAMES[roomOf(stationOf(a).x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
       case 'delivering': return a.delivery.kind === 'rework' ? `Taking the ${a.delivery.from.title} to ${a.delivery.to.name}` : `Bringing work to ${a.delivery.to.name}`;
       case 'break': return a.breakSpot ? a.breakSpot.where : 'On a break';
       case 'meeting': return !m ? 'In the boardroom' : m.phase === 'huddle' ? 'Walking to the briefing' : m.phase === 'present' ? (a.role === 'lead' ? 'Presenting the plan' : 'In the briefing') : m.phase === 'wrap' ? 'Heading to the town hall' : m.phase === 'demo' ? (a.role === 'lead' ? 'Demoing on stage' : 'On stage at the town hall') : 'At the town hall';
@@ -1942,6 +1981,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function phaseText() {
     const m = mission;
     if (isThinking() && (!m || m.phase === 'execute')) return 'Thinking';
+    if (planInfo.on && m && (m.phase === 'huddle' || m.phase === 'present' || m.phase === 'execute')) return 'Planning (plan mode)';
     if (!m) return idleMode() ? 'Idle' : 'Working';
     if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
     const done = m.tasks.filter(t => t.state === 'done').length;
@@ -2065,6 +2105,8 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
     startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
     turnStart: E(turnStart), markWaiting: E(markWaiting), machineSeed: E(machineSeed), stepDone: E(stepDone), kpis: kpiInfo,
+    setPlanMode: E(setPlanMode), get planMode() { return planInfo.on; },
+    lockWorkSlot: E(on => { viewLock.work = !!on; }),
     setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
     strip: stripInfo, machines: machinesInfo, toolRole,
     get simT() { return simT; },

@@ -8,7 +8,7 @@ function agentStatus(a) {
   switch (a.state) {
     case 'working':
       return a.runCount > 0 && a.act ? `${a.act.tool}${a.act.label ? ' · ' + a.act.label : ''}` : `Finishing ${a.act ? a.act.tool : 'up'}`;
-    case 'toWork': { const r = ROOM_NAMES[roomOf(STATIONS[a.role].x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
+    case 'toWork': { const r = ROOM_NAMES[roomOf(stationOf(a).x)]; return `Heading to the ${r === 'IT lab' ? r : r.toLowerCase()}`; }
     case 'delivering': return a.delivery.kind === 'rework' ? `Taking the ${a.delivery.from.title} to ${a.delivery.to.name}` : `Bringing work to ${a.delivery.to.name}`;
     case 'break': return a.breakSpot ? a.breakSpot.where : 'On a break';
     case 'meeting': return !m ? 'In the boardroom' : m.phase === 'huddle' ? 'Walking to the briefing' : m.phase === 'present' ? (a.role === 'lead' ? 'Presenting the plan' : 'In the briefing') : m.phase === 'wrap' ? 'Heading to the town hall' : m.phase === 'demo' ? (a.role === 'lead' ? 'Demoing on stage' : 'On stage at the town hall') : 'At the town hall';
@@ -20,6 +20,7 @@ function agentStatus(a) {
 function phaseText() {
   const m = mission;
   if (isThinking() && (!m || m.phase === 'execute')) return 'Thinking';
+  if (planInfo.on && m && (m.phase === 'huddle' || m.phase === 'present' || m.phase === 'execute')) return 'Planning (plan mode)';
   if (!m) return idleMode() ? 'Idle' : 'Working';
   if (idleMode() && (m.phase === 'execute' || m.phase === 'done')) return 'Idle';
   const done = m.tasks.filter(t => t.state === 'done').length;
@@ -143,6 +144,8 @@ return {
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
   startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
   turnStart: E(turnStart), markWaiting: E(markWaiting), machineSeed: E(machineSeed), stepDone: E(stepDone), kpis: kpiInfo,
+  setPlanMode: E(setPlanMode), get planMode() { return planInfo.on; },
+  lockWorkSlot: E(on => { viewLock.work = !!on; }),
   setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
   strip: stripInfo, machines: machinesInfo, toolRole,
   get simT() { return simT; },
