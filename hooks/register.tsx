@@ -6,12 +6,12 @@
 // .catch that replays next), so a fault here never blocks or alters a tool
 // call, a prompt or a turn. Frames are painted on a timer, never inside a
 // tool call.
-import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
+import type { Elements, EngineInterface, Register, ToolCallResult } from 'claude-code'
 import { createOffice } from './world.ts'
 import { base64, encodePNG } from './raster.ts'
 import { filmSvg, shoot, type Film } from './stage.ts'
 import { routeTool, type Route } from './classify.ts'
-import type { Card, ContextInfo, Frame, Kpis, MachineInfo, Motion, Office, RoleId, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
+import type { Card, CardInfo, ContextInfo, Frame, Kpis, MachineInfo, Motion, Office, ReplayEvent, RoleId, ScreenPage, Sfx, StatusLine, StripInfo, ThemeId, Usage } from './types.ts'
 
 const PLUGIN = 'digital-workplace'
 const PANE = 'digital-workplace'
@@ -23,13 +23,14 @@ const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g
 
 type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single' }
+type QuickActions = 'off' | 'fill' | 'send'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -83,6 +84,7 @@ function ensureOffice(): Office {
     })
     // The standard view: the boardroom pinned beside the room where the work is.
     if (opts.view === 'split') { office.setZoom(2); office.togglePin(3); office.lockWorkSlot(true) }
+    office.setPlanUsage(planUsage())
   }
   return office
 }
@@ -99,7 +101,7 @@ function statusText(s: StatusLine): string {
 }
 
 // ---- truth strip, compute rows, status line (native text: readable, cheap) ----
-type Line = { key: string; text: string; color?: string; dim?: boolean }
+type Line = { key: string; text: string; color?: string; dim?: boolean; agent?: string }
 const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 function stripLines(st: StripInfo): Line[] {
   const out: Line[] = []
@@ -144,12 +146,12 @@ function machineLine(m: MachineInfo): Line {
   const indent = m.key === 'main' ? '' : '  '
   // A subagent's row is named by its task (ten "general-purpose" rows tell nothing apart).
   const label = m.key === 'main' ? 'main' : clipText(m.description || m.name, 34)
-  if (!m.seen) return { key: m.key, text: `${indent}● ${label} · running, model not seen yet · ${mmss(m.seconds)}`, dim: true }
+  if (!m.seen) return { key: m.key, agent: m.key, text: `${indent}● ${label} · running, model not seen yet · ${mmss(m.seconds)}`, dim: true }
   const head = `${indent}${m.on ? '●' : '○'} ${label} · ${m.model}${m.effort ? ` · ${m.effort}` : ''}`
   const u: Usage | null = m.usage
-  if (m.on) return { key: m.key, text: `${head} · ${m.requests} req${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${k(u.output_tokens)} out` : ''} · ${mmss(m.seconds)}`, color: m.color }
+  if (m.on) return { key: m.key, agent: m.key, text: `${head} · ${m.requests} req${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in · ${k(u.output_tokens)} out` : ''} · ${mmss(m.seconds)}`, color: m.color }
   const tokens = u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in${u.cache_read_input_tokens ? ` (${k(u.cache_read_input_tokens)} cached)` : ''} · ${k(u.output_tokens)} out` : ''
-  return { key: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
+  return { key: m.key, agent: m.key, text: `${head}${tokens} · ${mmss(m.seconds)}`, dim: true }
 }
 // What the account spends: a subscription's plan windows (no dollars: the
 // plan is not billed per token), or an API key's dollars. From the engine's
@@ -168,6 +170,14 @@ function setAccount(u: { rateLimits?: readonly Limit[]; cost?: { usd: number } }
   if (!u) return
   if (Array.isArray(u.rateLimits)) account = { ...account, limits: u.rateLimits.filter(l => Number.isFinite(l.percentUsed)).map(l => ({ kind: String(l.kind), percentUsed: l.percentUsed, resetsAt: l.resetsAt })) }
   if (u.cost && Number.isFinite(u.cost.usd)) account = { ...account, usd: u.cost.usd }
+  office?.setPlanUsage(planUsage())
+}
+const WINDOW_TAGS: Record<string, string> = { five_hour: '5H', seven_day: 'WEEK', spend_limit: 'SPEND' }
+/** The boardroom screen's plan page: the same figures as the usage line (dollars only where dollars are spent). */
+function planUsage(): { windows: { label: string; pct: number }[]; usd: number | null } {
+  const windows = account.limits.map(l => ({ label: WINDOW_TAGS[l.kind] ?? l.kind.replace(/_/g, ' ').toUpperCase().slice(0, 6), pct: l.percentUsed }))
+  const spends = account.limits.length ? account.limits.some(l => l.kind === 'spend_limit') : (account.usd ?? 0) > 0
+  return { windows, usd: spends ? account.usd : null }
 }
 function usageLine(o: Office): Line | null {
   const kp = o.kpis(), tokens = kp.sessionTokens ? `${k(kp.sessionTokens)} tokens since the office opened` : ''
@@ -249,6 +259,129 @@ function planAfter(tool: string, input: Record<string, unknown>, result: unknown
     return true
   }
   return false
+}
+
+// ---- interactive pane: every detail stays closed until it is pressed ----
+type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
+/** The open detail: a compute row's agent or a plan card. */
+let detail: { kind: 'agent'; key: string } | { kind: 'card'; id: string } | null = null
+let cardsOpen = false
+let moreRooms = false
+/** The rooms the tab row always shows, in world order: where the work happens. "+N rooms" shows the rest. */
+const MAIN_ROOMS = [1, 3, 5]
+const SCREEN_PAGES: ScreenPage[] = ['turn', 'session', 'plan']
+const PAGE_NAMES: Record<ScreenPage, string> = { turn: 'Turn', session: 'Session', plan: 'Plan' }
+/** Prompts the quick-action buttons put in the prompt box (fill) or send (send). Off by default. */
+const QUICK = [
+  { key: 'qa-tests', label: 'Run tests', text: "Run the project's tests and report what fails." },
+  { key: 'qa-review', label: 'Review', text: 'Review the changes so far for bugs and risks.' },
+  { key: 'qa-commit', label: 'Commit', text: 'Commit the current changes with a clear message.' },
+  { key: 'qa-status', label: 'Status', text: 'Summarize what is done and what remains.' },
+]
+/** A quick action's prompt on its way: the mod's own prompt.submit hook may not see it. */
+let quickSent: string | null = null
+async function quickAction($: Engine, text: string): Promise<void> {
+  try {
+    if (opts.quickActions === 'send') {
+      quickSent = text
+      await $.prompt.submit({ text })
+      if (quickSent === text) { quickSent = null; newTask(text) }
+      return
+    }
+    // Fill keeps the person's draft: the prompt goes after it.
+    const draft = (await $.prompt.read()).text
+    if (draft.trim()) await $.prompt.fill({ text: `${/\s$/.test(draft) ? '' : ' '}${text}`, mode: 'append' })
+    else await $.prompt.fill({ text, mode: 'replace' })
+  } catch { /* no prompt box here */ }
+}
+
+const agoText = (s: number): string => {
+  if (s < 1) return 'just now'
+  if (s < 60) return `${Math.floor(s)}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`
+}
+function agentLines(m: MachineInfo): string[] {
+  const u = m.usage
+  return [
+    m.key === 'main' ? 'Main loop: the conversation itself' : `Task: ${m.description || 'not named'}`,
+    `Type ${m.type || 'unknown'} · model ${m.seen ? m.model || 'unknown' : 'not seen yet'}${m.effort ? ` · effort ${m.effort}` : ''} · ${m.on ? 'running' : 'finished'} ${mmss(m.seconds)}`,
+    `${m.requests} request${m.requests === 1 ? '' : 's'}${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in (${k(u.cache_read_input_tokens)} cached) · ${k(u.output_tokens)} out` : ' · no tokens reported yet'}`,
+    `Last tool: ${m.lastTool || 'none yet'}`,
+  ]
+}
+/** A plan card's detail. Plan items name no crew member: "busy meanwhile" is who had calls while it was open. */
+function cardText(c: CardInfo): string {
+  const who = c.workers.length ? ` · busy meanwhile: ${c.workers.join(', ')}` : ''
+  if (c.state === 'queued') return 'Not started yet'
+  if (c.state === 'working') return `In progress for ${mmss(c.seconds)}${who}`
+  return c.seconds > 0 ? `Done in ${mmss(c.seconds)}${who}` : 'Done'
+}
+const cardMark = (st: CardInfo['state']): string => (st === 'done' ? '✓' : st === 'working' ? '●' : '○')
+
+// ---- replay: the latest task again, in a second office ----
+/** Pauses longer than this are shortened in a replay (seconds). */
+const REPLAY_GAP = 2
+type Replay = { office: Office; events: ReplayEvent[]; times: number[]; next: number; clock: number; end: number; paused: boolean; title: string }
+let replay: Replay | null = null
+/** The office the pane shows: the replay while one is open, else the live office. */
+const shown = (): Office => replay?.office ?? ensureOffice()
+/** A new picture source: the film and the frame caches start over. */
+function resetStage(): void {
+  film = null
+  lastShot = -Infinity
+  forceShot = true
+  filmFps = 0
+  horizon = 2
+  paneSig = ''
+  dropFrameCaches()
+}
+/** Plays the latest task's events again, in order and with their pauses shortened, in a fresh office. */
+function startReplay(): boolean {
+  const live = ensureOffice()
+  const events = live.replayLog()
+  if (events.length < 2) return false
+  const o = createOffice({ theme: themeFor(opts.theme), motion: opts.motion, walkSpeed: opts.walkSpeed, zoom: 1 })
+  o.setZoom(live.zoom)
+  for (const r of live.pinned) o.togglePin(r)
+  if (opts.view === 'split') o.lockWorkSlot(true)
+  o.setScreenPage(live.screenPage)
+  const times: number[] = []
+  let at = 0
+  events.forEach((ev, i) => { if (i > 0) at += Math.min(REPLAY_GAP, Math.max(0, ev.t - events[i - 1]!.t)); times.push(at) })
+  replay = { office: o, events, times, next: 0, clock: 0, end: at + 4, paused: false, title: live.ticker().title }
+  stepReplay(0)
+  resetStage()
+  return true
+}
+function stepReplay(dt: number): void {
+  const r = replay
+  if (!r || r.paused) return
+  r.clock = Math.min(r.end, r.clock + dt)
+  const api = r.office as unknown as Record<string, unknown>
+  while (r.next < r.events.length && r.times[r.next]! <= r.clock) {
+    const ev = r.events[r.next++]!
+    const f = api[ev.name]
+    if (typeof f === 'function') { try { (f as (...a: unknown[]) => unknown).apply(r.office, ev.args) } catch { /* a bad event is skipped */ } }
+  }
+  r.office.advance(dt)
+  if (r.clock >= r.end) r.paused = true
+}
+function stopReplay(): void {
+  replay = null
+  resetStage()
+}
+
+/** A new task: the crew starts a mission titled from the prompt. */
+function newTask(text: string): void {
+  missionNo++
+  const o = ensureOffice()
+  // Title the mission from the person's own words, not app-injected
+  // reminders; with nothing left, startMission falls back to 'Untitled task'.
+  o.startMission(text.replace(SYSTEM_REMINDER, '').trim())
+  const open = openCards()
+  if (open.length) o.setCards(open)
+  frameNo++
 }
 
 // ---- tool calls ----
@@ -508,6 +641,8 @@ function signature(o: Office): string {
     truthLines(o).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
     `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
     o.rooms().map(r => `${r.current}${r.inView}${r.pinned}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
+    o.screenPage, replay ? `${replay.paused}${Math.floor(replay.clock)}` : '', JSON.stringify(detail), cardsOpen, moreRooms,
+    o.selectedId ? o.history(o.selectedId)[0]?.endT ?? '' : '', ensureOffice().replaySize > 1,
   ].join('#')
 }
 
@@ -528,6 +663,7 @@ async function tick($: Engine): Promise<void> {
     lastTick = now
     const o = ensureOffice()
     o.advance(dt)
+    if (replay) stepReplay(dt)
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
@@ -536,13 +672,16 @@ async function tick($: Engine): Promise<void> {
       const terminal = kinds === null || kinds.includes('terminal')
       const pictures = kinds === null || kinds.some(k => k !== 'terminal')
       let redraw = false
+      const v = shown()
       // Svg surfaces play a film on their own: redraw for a new film or new text only.
+      // A paused replay shows a still frame.
       if (pictures) {
-        const sig = signature(o)
-        if (currentFilm(o).fresh || sig !== paneSig) { paneSig = sig; redraw = true }
+        const sig = signature(v)
+        const fresh = replay?.paused ? false : currentFilm(v).fresh
+        if (fresh || sig !== paneSig) { paneSig = sig; redraw = true }
       }
       // Terminals redraw every frame; an idle office needs only a quarter of the rate.
-      if (terminal && (o.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      if (terminal && !replay?.paused && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
       if (redraw) $.ui.invalidate('ui.render')
     }
     const bar = statusBar(o)
@@ -599,7 +738,7 @@ function summary(o: Office): string {
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
-    `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'}`,
+    `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'} · pane ${paneOpen ? 'open' : 'hidden'} · screen ${PAGE_NAMES[o.screenPage]}${replay ? ` · replay ${replay.paused ? 'paused' : 'playing'} ${mmss(replay.clock)}/${mmss(replay.end)}` : ''}`,
     'Strip:',
     ...truthLines(o).map(l => `  ${l.text}`),
     ...computeLines(o).map(l => `  ${l.text}`),
@@ -618,6 +757,7 @@ export const register: Register = (on, options) => {
     toolChips: options.toolChips === true,
     walkSpeed: options.walkSpeed === 'slow' || options.walkSpeed === 'fast' ? options.walkSpeed : 'normal',
     view: options.view === 'single' ? 'single' : 'split',
+    quickActions: options.quickActions === 'fill' || options.quickActions === 'send' ? options.quickActions : 'off',
   }
 
   on('session.start', async ($, e, next) => {
@@ -679,16 +819,8 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', ($, e, next) => {
     try {
-      if (!e.isMeta && !e.command && e.text.trim()) {
-        missionNo++
-        const o = ensureOffice()
-        // Title the mission from the person's own words, not app-injected
-        // reminders; with nothing left, startMission falls back to 'Untitled task'.
-        o.startMission(e.text.replace(SYSTEM_REMINDER, '').trim())
-        const open = openCards()
-        if (open.length) o.setCards(open)
-        frameNo++
-      }
+      if (quickSent !== null && e.text === quickSent) quickSent = null
+      if (!e.isMeta && !e.command && e.text.trim()) newTask(e.text)
     } catch {
       // never in the way of a prompt
     }
@@ -830,24 +962,139 @@ export const register: Register = (on, options) => {
   }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
-    const o = ensureOffice()
+    const live = ensureOffice()
+    // While a replay is open, the pane (pictures, strip, crew, buttons) shows it; the status bar stays live.
+    const o = shown()
     const t = o.ticker()
     const s = o.statusLine()
     const rooms = o.rooms()
     const crew = o.crew()
     const here = rooms.find(r => r.current)?.name ?? ''
-    const alt = `Digital Workplace office, ${here} in view. ${statusText(s).slice(2)}`
+    const alt = `${replay ? 'Replay of the latest task' : 'Digital Workplace office'}, ${here} in view. ${statusText(s).slice(2)}`
     const redraw = (): void => { frameNo++; forceShot = true; $.ui.invalidate('ui.render') }
     const beat = ['▪▫▫▫', '▫▪▫▫', '▫▫▪▫', '▫▫▫▪'][t.beat] ?? '▫▫▫▫'
     const ticker = `${t.phase}  ${beat}${t.total ? `  ${t.done}/${t.total} cards` : ''}  Duets ${t.duets}  ${t.clock}`
+    const terminal = e.surface === 'terminal'
+    const { Box, Text, Button } = $.ui.resolve(e) as Kit
+    // Svg surfaces draw small type; terminals have one size.
+    const note = terminal ? {} : ({ size: 'footnote' } as const)
+    const mono = terminal ? {} : ({ mono: true, size: 'footnote' } as const)
+    const gaps = terminal ? { columnGap: 1 } : { columnGap: 1, rowGap: 1 }
+    const strip = truthLines(o)
+    const compute = computeLines(o)
+    const cards = o.cards()
+    const followed = crew.find(c => c.selected)
 
-    if (e.surface === 'terminal') {
-      const { Box, Text, Button, Image, Raster } = $.ui.resolve(e)
+    // Room tabs: the three work rooms, any room in view, and "+N rooms" for the rest.
+    const tabs = moreRooms ? rooms : rooms.filter(r => MAIN_ROOMS.includes(r.index) || r.current || r.inView || r.pinned)
+    const hidden = rooms.filter(r => !tabs.includes(r))
+    const roomRow = (
+      <Box key="rooms" flexDirection="row" flexWrap="wrap" {...gaps}>
+        <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
+        {tabs.map(r => (
+          <Button key={`room-${r.index}`} variant={(o.zoom > 1 ? r.inView : r.current) ? 'primary' : undefined} onPress={() => { roomPress(o, r.index); redraw() }}>
+            {r.pinned ? '◆ ' : ''}{r.name}{terminal ? '' : ' '}{r.agents.map(a => <Text color={a.color}>■</Text>)}
+          </Button>
+        ))}
+        {(hidden.length > 0 || moreRooms) && (
+          <Button key="rooms-more" dimColor onPress={() => { moreRooms = !moreRooms; redraw() }}>
+            {moreRooms ? 'Fewer rooms' : `+${hidden.length} rooms `}{hidden.flatMap(r => r.agents).map(a => <Text color={a.color}>■</Text>)}
+          </Button>
+        )}
+        <Button key="next" label="›" dimColor={!o.canNext()} onPress={() => { o.nextRoom(); redraw() }} />
+      </Box>
+    )
+    const flipScreen = (): void => {
+      const p = SCREEN_PAGES[(SCREEN_PAGES.indexOf(o.screenPage) + 1) % SCREEN_PAGES.length]!
+      live.setScreenPage(p)
+      replay?.office.setScreenPage(p)
+      redraw()
+    }
+    const controls = (
+      <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
+        {!terminal && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
+        {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
+        <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
+        {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
+        <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
+        <Button key="screen" label={`Screen: ${PAGE_NAMES[o.screenPage]}`} onPress={flipScreen} />
+        {!replay && live.replaySize > 1 && <Button key="replay" label="▶ Replay task" onPress={() => { if (startReplay()) redraw() }} />}
+      </Box>
+    )
+    const r = replay
+    const replayBar = r && (
+      <Box key="replay-bar" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
+        <Text color="#b08cf5" bold>{`${r.clock >= r.end ? 'Replay finished' : r.paused ? 'Replay paused' : 'Replaying'}${r.title ? ` "${clipText(r.title, 40)}"` : ''} · ${mmss(r.clock)} / ${mmss(r.end)}`}</Text>
+        <Button key="replay-pause" label={r.paused ? '▶ Play' : '⏸ Pause'} onPress={() => { if (r.clock >= r.end) startReplay(); else r.paused = !r.paused; redraw() }} />
+        <Button key="replay-again" label="↺ Again" onPress={() => { startReplay(); redraw() }} />
+        <Button key="replay-live" variant="primary" label="■ Live" onPress={() => { stopReplay(); redraw() }} />
+      </Box>
+    )
+    const tickerRow = (
+      <Box key="ticker" flexDirection="row" flexWrap="wrap" columnGap={2} alignItems="center">
+        <Text {...mono}>{ticker}</Text>
+        {cards.length > 0 && <Button key="plan" dimColor={!cardsOpen} label={`Cards ${cardsOpen ? '▾' : '▸'}`} onPress={() => { cardsOpen = !cardsOpen; if (!cardsOpen && detail?.kind === 'card') detail = null; redraw() }} />}
+      </Box>
+    )
+    const cardList = cardsOpen && cards.length > 0 && (
+      <Box key="cards" flexDirection="column">
+        {cards.map(c => {
+          const open = detail?.kind === 'card' && detail.id === c.id
+          return (
+            <Box key={`cardrow-${c.id}`} flexDirection="column">
+              <Button key={`plan-${c.id}`} plain onPress={() => { detail = open ? null : { kind: 'card', id: c.id }; redraw() }}>
+                <Text color={c.state === 'working' ? '#f4b942' : c.state === 'done' ? '#6fdc8c' : undefined} dimColor={c.state === 'queued'} {...note}>{`${cardMark(c.state)} ${clipText(c.title, 70)}`}</Text>
+              </Button>
+              {open && <Text key={`cardinfo-${c.id}`} dimColor {...note}>{`   ${cardText(c)}`}</Text>}
+            </Box>
+          )
+        })}
+      </Box>
+    )
+    // Compute rows: each machine row opens its agent's detail.
+    const computeBox = compute.length > 0 && (
+      <Box key="compute" flexDirection="column">
+        {compute.map(l => {
+          if (!l.agent) return <Text key={`c-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end" {...mono}>{l.text}</Text>
+          const key = l.agent, open = detail?.kind === 'agent' && detail.key === key
+          const m = open ? o.machines().list.find(x => x.key === key) : undefined
+          return (
+            <Box key={`agentrow-${key}`} flexDirection="column">
+              <Button key={`agent-${key}`} plain onPress={() => { detail = open ? null : { kind: 'agent', key }; redraw() }}>
+                <Text color={l.color} dimColor={l.dim} {...mono}>{`${l.text} ${open ? '▾' : '▸'}`}</Text>
+              </Button>
+              {open && (m ? agentLines(m) : ['No longer listed.']).map((x, i) => <Text key={`agentinfo-${key}-${i}`} color="#a8e6ff" wrap="truncate-end" {...mono}>{`    ${x}`}</Text>)}
+            </Box>
+          )
+        })}
+      </Box>
+    )
+    const quick = opts.quickActions !== 'off' && !replay && (
+      <Box key="quick" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
+        <Text dimColor {...note}>{opts.quickActions === 'send' ? 'Send to Claude:' : 'Put in the prompt:'}</Text>
+        {QUICK.map(q => <Button key={q.key} label={q.label} onPress={() => void quickAction($, q.text)} />)}
+      </Box>
+    )
+    // Following a crew member also opens their recent calls.
+    const hist = followed ? o.history(followed.id) : []
+    const history = followed && (
+      <Box key="history" flexDirection="column">
+        <Text color={followed.color} bold {...note}>{`${followed.name}'s recent calls`}</Text>
+        {hist.length
+          ? hist.map((call, i) => (
+            <Text key={`hist-${i}`} color={call.ok ? undefined : '#ff6b6b'} dimColor={call.ok} wrap="truncate-end" {...note}>
+              {`${call.ok ? '✓' : '✗'} ${call.tool}${call.label ? ` ${call.label}` : ''} · ${mmss(call.seconds)}${call.model ? ` · ${call.model}` : ''} · ${agoText(call.ago)}`}
+            </Text>
+          ))
+          : <Text dimColor {...note}>No calls yet.</Text>}
+      </Box>
+    )
+
+    if (terminal) {
+      const { Image, Raster } = $.ui.resolve(e)
       const pictures = termArt === 'image' || (termArt === 'iterm' && e.viewport?.isFullscreen === true)
       // Fit the office to the pane: leave two rows under it for the status
       // line and the ticker, and keep its shape by narrowing it if needed.
-      const strip = truthLines(o)
-      const compute = computeLines(o)
       const bodyRows = e.props.scroll?.bodyRows ?? 40
       // Too small for pixels: the strip and compute rows alone stay readable.
       const office = e.props.bodyColumns >= 40 && bodyRows >= 14
@@ -867,24 +1114,14 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+          {replayBar}
           {view}
-          <Text>{ticker}</Text>
-          {compute.map(l => <Text key={`c-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
-          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-            <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
-            {rooms.map(r => (
-              <Button key={`room-${r.index}`} variant={(o.zoom > 1 ? r.inView : r.current) ? 'primary' : undefined} onPress={() => { roomPress(o, r.index); redraw() }}>
-                {r.pinned ? '◆ ' : ''}{r.name}{r.agents.map(a => <Text color={a.color}>■</Text>)}
-              </Button>
-            ))}
-            <Button key="next" label="›" dimColor={!o.canNext()} onPress={() => { o.nextRoom(); redraw() }} />
-          </Box>
-          <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-            {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
-            <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
-            {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
-            <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
-          </Box>
+          {tickerRow}
+          {cardList}
+          {computeBox}
+          {roomRow}
+          {controls}
+          {quick}
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {crew.map(c => (
               <Box key={`card-${c.id}`} flexDirection="column" width={26}>
@@ -895,43 +1132,27 @@ export const register: Register = (on, options) => {
               </Box>
             ))}
           </Box>
+          {history}
         </Box>
       )
     }
 
-    const { Box, Text, Button, Svg } = $.ui.resolve(e)
-    const cur = currentFilm(o).film
+    const { Svg } = $.ui.resolve(e)
+    const cur = replay?.paused ? null : currentFilm(o).film
     const svg = cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg
-    const strip = truthLines(o)
-    const compute = computeLines(o)
     return (
       <Box flexDirection="column" gap={1}>
         <Box key="strip" flexDirection="column">
           {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
         </Box>
+        {replayBar}
         <Svg source={svg} alt={alt} />
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
-          <Button key="prev" label="‹" dimColor={!o.canPrev()} onPress={() => { o.prevRoom(); redraw() }} />
-          {rooms.map(r => (
-            <Button key={`room-${r.index}`} variant={(o.zoom > 1 ? r.inView : r.current) ? 'primary' : undefined} onPress={() => { roomPress(o, r.index); redraw() }}>
-              {r.pinned ? '◆ ' : ''}{r.name} {r.agents.map(a => <Text color={a.color}>■</Text>)}
-            </Button>
-          ))}
-          <Button key="next" label="›" dimColor={!o.canNext()} onPress={() => { o.nextRoom(); redraw() }} />
-        </Box>
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1} alignItems="center">
-          <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>
-          {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
-          <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
-            {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
-          <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
-        </Box>
-        <Text mono size="footnote">{ticker}</Text>
-        {compute.length > 0 && (
-          <Box key="compute" flexDirection="column">
-            {compute.map(l => <Text key={`c-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
-          </Box>
-        )}
+        {roomRow}
+        {controls}
+        {tickerRow}
+        {cardList}
+        {computeBox}
+        {quick}
         <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">
@@ -946,7 +1167,9 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
         </Box>
+        {history}
       </Box>
     )
   })
+
 }

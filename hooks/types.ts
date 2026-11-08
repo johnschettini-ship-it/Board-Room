@@ -100,7 +100,18 @@ export type MachineInfo = {
   usage: Usage | null
   /** False for a subagent listed as running whose model requests the office has not seen yet. */
   seen: boolean
+  /** The engine's agent type ('main' for the main loop; '' when not known). */
+  type: string
+  /** The latest tool call this run asked for (tool and target), '' before any. */
+  lastTool: string
 }
+/** A plan card: its state, how long it has been in progress (or took), and who worked during that time. */
+export type CardInfo = { id: string; title: string; state: 'queued' | 'working' | 'done'; seconds: number; workers: string[] }
+/** One finished call of a crew member, newest first; ago in office seconds. */
+export type HistoryItem = { tool: string; label: string; ok: boolean; seconds: number; model: string; endT: number; ago: number }
+/** An outside event of the latest task, as it reached the office (office seconds). */
+export type ReplayEvent = { t: number; name: string; args: unknown[] }
+export type ScreenPage = 'turn' | 'session' | 'plan'
 export type MachinesInfo = { list: MachineInfo[]; more: number; on: number }
 
 export type Snapshot = {
@@ -199,6 +210,18 @@ export interface Office {
   readonly planMode: boolean
   /** Split view: the free slot stays on the work room (the town hall during a ship). */
   lockWorkSlot(on: boolean): void
+  /** The plan cards of the latest task, with timing and workers. */
+  cards(): CardInfo[]
+  /** A crew member's last calls (up to 12, across turns), newest first. */
+  history(id: string): HistoryItem[]
+  /** The latest task's outside events, oldest first (up to 5000), for a replay. */
+  replayLog(): ReplayEvent[]
+  readonly replaySize: number
+  /** The boardroom screen's page: this turn, the session, or the plan's usage. */
+  setScreenPage(p: ScreenPage): void
+  readonly screenPage: ScreenPage
+  /** The plan's usage windows (percent used) and an API key's dollars, for the screen's plan page. */
+  setPlanUsage(u: { windows: { label: string; pct: number }[]; usd: number | null }): void
   /** A subagent the engine lists as running, before any of its requests is seen. */
   machineSeed(key: string, info: { type?: string; description?: string; parentId?: string | null }): void
   /** The main loop's context window: figures from the engine (window, and tokens when known). */

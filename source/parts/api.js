@@ -85,7 +85,7 @@ function machinesInfo() {
   const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
   const list = all.slice(0, MAX_MACHINES).map(m => ({
     key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
-    color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId,
+    color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '',
     seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
   }));
   return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
@@ -104,6 +104,21 @@ function kpiInfo() {
 function contextInfo() {
   const c = ctxInfo;
   return { tokens: c.tokens, window: c.window, percent: c.tokens !== null && c.window ? Math.min(100, Math.round(c.tokens / c.window * 100)) : null, compacting: c.compacting };
+}
+function cardsInfo() {
+  const m = mission; if (!m) return [];
+  return m.tasks.map(t => {
+    const from = t.startedT, to = t.doneT != null ? t.doneT : simT, who = [];
+    if (from != null) for (const a of agents) {
+      const busy = (histories[a.role] || []).some(h => h.endT >= from && h.endT - h.seconds <= to) || [...acts.values()].some(x => x.role === a.role && x.startT <= to);
+      if (busy) who.push(a.name);
+    }
+    return { id: t.id, title: t.title, state: t.state, seconds: from == null ? 0 : to - from, workers: who };
+  });
+}
+function historyOf(id) {
+  const a = agents.find(x => x.id === id); if (!a) return [];
+  return (histories[a.role] || []).slice().reverse().map(h => ({ ...h, model: h.model ? shortModel(h.model) : '', ago: simT - h.endT }));
 }
 function toolRole(id) {
   const x = acts.get(id) || turnCalls.find(c => c.id === id);
@@ -130,6 +145,8 @@ const crewSprites = {};
 for (const a of agents) { const [c, g] = makeCanvas(13, 20); paintSprite(g, 1, 3, 0, 'down', 'down', 0, a, false, false); crewSprites[a.id] = c; }
 
 const E = external;
+// An outside event that a replay plays again (presses and settings are not).
+const R = (name, f) => E((...args) => { recordEvent(name, args); return f(...args); });
 return {
   advance, render, film, camPath,
   get version() { return version; },
@@ -142,11 +159,15 @@ return {
   setTheme: k => { if (THEMES[k] && k !== themeKey) E(applyTheme)(k); },
   setMotion: E(v => { motion = v; reduceMotion = v === 'reduced'; }),
   rooms, crew, ticker, statusLine, snapshot, crewSprite: id => crewSprites[id],
-  startMission: E(startMission), toolStart: E(toolStart), toolEnd: E(toolEnd), handoff: E(handoff), bug: E(bug), turnEnd: E(turnEnd), setCards: E(setCards),
-  turnStart: E(turnStart), markWaiting: E(markWaiting), machineSeed: E(machineSeed), stepDone: E(stepDone), kpis: kpiInfo,
-  setPlanMode: E(setPlanMode), get planMode() { return planInfo.on; },
+  startMission: R('startMission', startMission), toolStart: R('toolStart', toolStart), toolEnd: R('toolEnd', toolEnd), handoff: R('handoff', handoff), bug: R('bug', bug), turnEnd: R('turnEnd', turnEnd), setCards: R('setCards', setCards),
+  turnStart: R('turnStart', turnStart), markWaiting: R('markWaiting', markWaiting), machineSeed: R('machineSeed', machineSeed), stepDone: R('stepDone', stepDone), kpis: kpiInfo,
+  // recorded only when it changes: every classic event reports the mode
+  setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
   lockWorkSlot: E(on => { viewLock.work = !!on; }),
-  setContext: E(setContext), compactStart: E(compactStart), compactEnd: E(compactEnd), context: contextInfo, machineStep: E(machineStep), machineStepEnd: E(machineStepEnd), machineDone: E(machineDone), machineInfo: E(machineInfo),
+  setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
+  cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },
+  setScreenPage: E(p => { if (p === 'turn' || p === 'session' || p === 'plan') screen.page = p; }), get screenPage() { return screen.page; },
+  setPlanUsage: E(u => { planUsage.windows = (u && u.windows || []).map(w => ({ label: String(w.label), pct: +w.pct || 0 })); planUsage.usd = u && Number.isFinite(+u.usd) && u.usd !== null ? +u.usd : null; }), machineStep: R('machineStep', machineStep), machineStepEnd: R('machineStepEnd', machineStepEnd), machineDone: R('machineDone', machineDone), machineInfo: R('machineInfo', machineInfo),
   strip: stripInfo, machines: machinesInfo, toolRole,
   get simT() { return simT; },
 };

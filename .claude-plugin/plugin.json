@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -88,6 +88,17 @@
       "options": [
         "split",
         "single"
+      ]
+    },
+    "quickActions": {
+      "type": "string",
+      "title": "Quick actions",
+      "description": "Buttons in the pane for common requests (Run tests, Review, Commit, Status). off: no buttons. fill: a button puts its request in the prompt box, after your draft; you press Enter. send: a button sends its request to Claude at once.",
+      "default": "off",
+      "options": [
+        "off",
+        "fill",
+        "send"
       ]
     }
   }

@@ -4,6 +4,17 @@
 // its model's colour, with a thought bubble while its request is open.
 // Open office: the crew works here, and each desk monitor shows that crew
 // member's tokens this turn (see stepDone for how they are attributed).
+// ---- replay: the outside events of the latest task, with their times ----
+// A replay feeds them, in order, to a second office (hooks module).
+const replayLog = [];
+function recordEvent(name, args) {
+  if (name === 'startMission') replayLog.length = 0;
+  let copy;
+  try { copy = JSON.parse(JSON.stringify(args)); } catch (_) { return; }
+  replayLog.push({ t: simT, name, args: copy });
+  if (replayLog.length > 5000) replayLog.shift();
+}
+
 // ---- pinned rooms ----
 // In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
 // when they are not neighbours; free slots follow the camera (auto, manual or
@@ -94,11 +105,36 @@ function drawContextGauge() {
   const pct = String(Math.min(99, Math.round(f * 100)));
   drawText(ctx, pct, x + 1 + Math.floor((7 - textW(pct)) / 2), y + 24, col);
 }
+// The boardroom screen has three pages, flipped from the pane: this turn, the
+// session so far, and the plan's usage (as Claude Code reports it).
+const screen = { page: 'turn' };
+const planUsage = { windows: [], usd: null };
 function drawKpis(S) {
   const k = kpiInfo(), fg = '#a8e6ff', dim = '#5a8ab8';
   let x = S.x + 2, y = S.y + 2;
   const seg = (s, c) => { drawText(ctx, s, x, y, c); x += textW(s) + 4; };
   const row = () => { x = S.x + 2; y += 7; };
+  const right = (str, c) => drawText(ctx, str, S.x + S.w - 2 - textW(str), y, c);
+  if (screen.page === 'session') {
+    const tin = sessTok.input + sessTok.cacheRead + sessTok.cacheCreate;
+    seg('IN', dim); seg(tokShort(tin), fg); seg('OUT', dim); seg(tokShort(sessTok.output), fg); row();
+    seg('CALLS', dim); seg(String(sessCount.calls), fg); if (sessCount.failed) { seg('FAIL', dim); seg(String(sessCount.failed), '#ff6b6b'); } row();
+    seg('REQ', dim); seg(String(sessTok.requests), fg); right('SESSION', '#f4b942'); row();
+    seg('OPEN', dim); seg(clockShort(simT), fg);
+    return;
+  }
+  if (screen.page === 'plan') {
+    seg('PLAN', '#f4b942'); if (planUsage.usd !== null) right('$' + planUsage.usd.toFixed(2), fg); row();
+    if (!planUsage.windows.length) { seg(planUsage.usd === null ? 'NO DATA YET' : 'API KEY', dim); return; }
+    for (const w of planUsage.windows.slice(0, 3)) {
+      const pct = Math.max(0, Math.min(100, w.pct)), col = pct >= 95 ? '#ff6b6b' : pct >= 80 ? '#f4b942' : '#78d98e';
+      seg(w.label, dim); seg(`${Math.round(pct)}%`, fg);
+      const bw = S.x + S.w - 3 - x;
+      if (bw > 6) { rect(ctx, x, y + 1, bw, 3, '#16365e'); rect(ctx, x, y + 1, Math.round(bw * pct / 100), 3, col); }
+      row();
+    }
+    return;
+  }
   seg('IN', dim); seg(tokShort(k.tokensIn), fg); seg('OUT', dim); seg(tokShort(k.tokensOut), fg); row();
   seg('CALLS', dim); seg(String(k.calls), fg);
   if (k.failed) { seg('FAIL', dim); seg(String(k.failed), '#ff6b6b'); }

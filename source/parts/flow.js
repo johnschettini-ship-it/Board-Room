@@ -261,6 +261,7 @@ function toolStart(id, role, tool, label, extra) {
   // The run that asked for the call (main loop or a subagent) and so its model.
   const run = extra && extra.run ? String(extra.run) : 'main', mm = machines.get(run);
   const act = { id, role: a.role, tool: String(tool || 'tool'), label: String(label || ''), startT: simT, endT: null, ok: null, waiting: false, run, model: mm ? mm.model : '', ship: !!(extra && extra.ship) };
+  if (mm) mm.lastTool = act.tool + (act.label ? ' ' + act.label : '');
   acts.set(id, act);
   if (!turnOpen) turnStart();
   // The first real work ends the briefing: the crew goes to its desks.
@@ -282,6 +283,9 @@ function toolEnd(id, ok) {
   // A failure stays on the strip until the same work later succeeds or the turn ends.
   if (act.ok) for (const c of turnCalls) if (!c.ok && !c.fixed && c.role === act.role && c.tool === act.tool && c.label === act.label) c.fixed = true;
   turnCalls.push({ id: act.id, role: act.role, tool: act.tool, label: act.label, ok: act.ok, fixed: false, startT: act.startT, endT: act.endT, run: act.run, model: act.model });
+  const hist = histories[act.role];
+  if (hist) { hist.push({ tool: act.tool, label: act.label, ok: act.ok, seconds: act.endT - act.startT, model: act.model, endT: act.endT }); if (hist.length > 12) hist.shift(); }
+  sessCount.calls++; if (!act.ok) sessCount.failed++;
   if (act.ship && act.ok) {
     ensureMission().ships.push(`${act.tool}${act.label ? ' ' + act.label : ''}`);
     setBubble(a, 'star', 2);
@@ -363,12 +367,19 @@ function setCards(list) {
   const m = ensureMission(), old = new Map(m.tasks.map(t => [t.id, t])), had = m.tasks.length;
   m.tasks = list.slice(0, 24).map(c => {
     const prev = old.get(c.id), state = c.status === 'completed' ? 'done' : c.status === 'in_progress' ? 'working' : 'queued';
-    return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0 };
+    return { id: c.id, role: 'none', title: String(c.title || ''), deps: [], delivered: new Set(), pending: 0, changes: false, isFix: false, pair: null, partner: null, hfBar: -1, state, progress: state === 'done' ? 1 : prev ? prev.progress : 0,
+      // when it went in progress and when it was done: who worked on it is read off the crew's history
+      startedT: prev && prev.startedT != null ? prev.startedT : state !== 'queued' ? simT : null,
+      doneT: state === 'done' ? (prev && prev.doneT != null ? prev.doneT : simT) : null };
   });
   if (m.phase === 'present') m.cardsShown = Math.min(m.cardsShown, m.tasks.length);
   if (!had && m.tasks.length) { setBubble(agentByRole.lead, 'star', 2.2); log(`Zorya put the plan on screen: ${m.tasks.length} card${m.tasks.length === 1 ? '' : 's'}.`, 'lead'); gatherBriefing(); }
   touch(null);
 }
+
+// ---- history: each crew member's recent calls (across turns), session counts ----
+const histories = { lead: [], research: [], design: [], build: [], review: [], qa: [] };
+const sessCount = { calls: 0, failed: 0 };
 
 // ---- tokens: summed from each model request's usage as it finishes ----
 // Never estimated mid-stream. roleTok splits each request's NEW tokens
