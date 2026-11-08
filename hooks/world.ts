@@ -1572,15 +1572,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   function paint(fx) {
     const slots = viewSlots();
-    if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc); return; }
-    slots.forEach((r, i) => paintSpan(fx, r * RW, i * RW, RW));
+    if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc, 0); return; }
+    const st = isStacked();
+    slots.forEach((r, i) => paintSpan(fx, r * RW, st ? 0 : i * RW, RW, st ? i * H : 0));
   }
-  /** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw). */
-  function paintSpan(fx, vx, sx, sw) {
+  /** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw), canvas rows [sy, sy + H). */
+  function paintSpan(fx, vx, sx, sw, sy) {
     const T = THEMES[themeKey], cam = camX, vw = VWc;
     camX = vx; VWc = sw; // culling and label placement below read the view from these
-    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, 0, sw, H); ctx.clip();
-    ctx.setTransform(1, 0, 0, 1, sx - vx, 0);
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, sy, sw, H); ctx.clip();
+    ctx.setTransform(1, 0, 0, 1, sx - vx, sy);
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     ctx.drawImage(bgCanvas, 0, 0);
     drawDynamic();
@@ -1595,7 +1596,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     items.push({ y: 90, img: tableCanvas }, { y: 119, img: chairCanvas }, { y: 146, img: frontCanvas }, { y: 175, img: hallCanvas });
     items.sort((p, q) => p.y - q.y);
     for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else if (it.run) drawRun(it.run); else drawAgent(it.a);
-    ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw);
+    ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw, sy, sy + H);
     drawParticles(fx);
     for (const n of npcs) if (n.bubble && visT < n.bubble.until && vis(n)) { const P = n._P; drawBubble(Math.round(P.x) - 5, P.oyL + P.bob + accTop(n.look) - 13, n.bubble.icon, n.bubble.color); }
     drawRunBubbles();
@@ -1617,7 +1618,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) { o[i] = b[i]; any = true; } else o[i] = 0; }
       if (any) fxLayer = fxOut;
     }
-    return { width: VWc, height: H, base, fx: fxLayer };
+    return { width: base.width, height: base.height, base, fx: fxLayer };
   }
   function drawLiveLine(x, y) {
     const s = statusLine();
@@ -1701,7 +1702,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function goRoom(r) { r = clamp(r, 0, ROOMS - 1); select(null); manualRoom = r; setAutoCam(false); }
   function setZoom(z) {
     zoom = clamp(z, 1, 3); VWc = RW * zoom;
-    ctx = new Px(VWc, H); fxCtx = new Px(VWc, H); fxOut = new Px(VWc, H);
+    sizeCanvas();
     camX = clamp(camX, 0, W - VWc);
   }
 
@@ -1724,6 +1725,19 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (replayLog.length > 5000) replayLog.shift();
   }
 
+  // ---- layout: rooms in view side by side (wide panes) or stacked (tall panes) ----
+  // Stacked, a 2- or 3-room view is one room wide and two or three rooms tall,
+  // each room at full width; the camera then cuts between sets of rooms. VWc
+  // stays the view's span in the world (camera and culling); the canvas is sized here.
+  const layout = { stacked: false };
+  const isStacked = () => layout.stacked && zoom > 1;
+  function sizeCanvas() {
+    const w = isStacked() ? RW : VWc, h = isStacked() ? H * zoom : H;
+    if (ctx.width === w && ctx.height === h) return;
+    ctx = new Px(w, h); fxCtx = new Px(w, h); fxOut = new Px(w, h);
+  }
+  function setStacked(on) { layout.stacked = !!on; sizeCanvas(); }
+
   // ---- pinned rooms ----
   // In a 2- or 3-room view, pressed rooms are pinned and shown side by side even
   // when they are not neighbours; free slots follow the camera (auto, manual or
@@ -1742,7 +1756,9 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function trimPins() { while (pinned.length > zoom) pinned.shift(); }
   /** The rooms in view, left to right, or null for the usual run of neighbours. */
   function viewSlots() {
-    if (zoom < 2 || !pinned.length) return null;
+    if (zoom < 2) return null;
+    // Stacked with nothing pinned: the usual run of neighbours, one above another.
+    if (!pinned.length) return isStacked() ? Array.from({ length: zoom }, (_, i) => viewStart() + i) : null;
     const slots = pinned.slice(-zoom), work = roomOf(STATIONS.build.x);
     // The camera wanting a room already pinned (Zorya in the pinned boardroom)
     // leaves the free slot on the work, not on the pinned room's neighbour.
@@ -1757,9 +1773,12 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   /** What the view shows (a film ends when it changes) and where the town hall sits in it. */
   function viewKey() {
     const slots = viewSlots();
-    if (slots) { const h = slots.indexOf(TOWN); return { key: 's' + slots.join(','), hallX: h >= 0 ? h * RW : null }; }
+    if (slots) {
+      const h = slots.indexOf(TOWN), st = isStacked();
+      return { key: 's' + slots.join(',') + (st ? 'v' : ''), hallX: h < 0 ? null : st ? 0 : h * RW, hallY: h >= 0 && st ? h * H : 0 };
+    }
     const vx = Math.round(camX);
-    return { key: String(vx), hallX: TOWN * RW - vx };
+    return { key: String(vx), hallX: TOWN * RW - vx, hallY: 0 };
   }
 
   const tokShort = n => n < 1000 ? String(n) : n < 999500 ? Math.round(n / 1000) + 'K' : n < 9.95e6 ? (n / 1e6).toFixed(1) + 'M' : Math.round(n / 1e6) + 'M';
@@ -1967,7 +1986,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
         if (k) advance(dt);
         const live = camX;
         let shown;
-        if (pan) { shown = { key: 'pan', hallX: TOWN * RW - pan.x, camX: Math.round(camX) - pan.x }; camX = pan.x; }
+        if (pan) { shown = { key: 'pan', hallX: TOWN * RW - pan.x, hallY: 0, camX: Math.round(camX) - pan.x }; camX = pan.x; }
         else { if (cut) camX = clamp(startFor(camTarget()) * RW, 0, W - VWc); shown = viewKey(); }
         const f = render();
         camX = live;
@@ -2139,7 +2158,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       cards: m ? m.tasks.map(t => ({ id: t.id, title: t.title, role: t.role, state: t.state })) : [],
       agents: agents.map(a => ({ id: a.id, name: a.name, role: a.role, state: a.state, room: ROOM_NAMES[roomOf(a.x)], x: Math.round(a.x), y: Math.round(a.y), working: isWorking(a), dancing: isDancing(a), tool: a.act ? a.act.tool : null, running: a.runCount, bubble: a.bubble && visT < a.bubble.until ? a.bubble.icon : null, duet: a.duet ? { giver: a.duet.giver.id, taker: a.duet.taker.id, kind: a.duet.kind } : null, delivering: a.delivery ? { to: a.delivery.to.id, kind: a.delivery.kind } : null, done: a.done })),
       receptionist: receptionist.bubble && visT < receptionist.bubble.until ? receptionist.bubble.icon : null,
-      view: { zoom, start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
+      view: { zoom, stacked: isStacked(), start: viewStart(), room: ROOM_NAMES[viewRoom()], slots: viewSlots(), pinned: zoom > 1 ? pinned.map(r => ROOM_NAMES[r]) : [], autoCam, director: directorRoom, dwell: +directorDwell.toFixed(2), focus: focus ? focus.id : null, focusAge: +(simT - focusT).toFixed(2) },
       particles: { total: particles.length, confetti: particles.filter(p => p.kind === 'confetti').length },
       status: statusLine(), ticker: ticker(), log: logRing.slice(-12), announce: lastAnnounce,
       strip: stripInfo(), machines: machinesInfo(), kpis: kpiInfo(), tokens: { ...roleTok }, context: contextInfo(), ships: mission ? mission.ships.slice() : [],
@@ -2172,6 +2191,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     // recorded only when it changes: every classic event reports the mode
     setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
     lockWorkSlot: E(on => { viewLock.work = !!on; }),
+    setStacked: E(on => { if (!!on !== layout.stacked) setStacked(on); }), get stacked() { return isStacked(); },
     setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
     cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },
     setScreenPage: E(p => { if (p === 'turn' || p === 'session' || p === 'plan') screen.page = p; }), get screenPage() { return screen.page; },

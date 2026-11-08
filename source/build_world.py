@@ -171,7 +171,7 @@ cam = patch(cam, "function setAutoCam(on) { autoCam = on; if (on) directorDwell 
             'function setAutoCam(on) { autoCam = on; if (on) directorDwell = 99; }')
 s0 = cam.index('function setZoom(z) {')
 s1 = cam.index('\n}', s0) + 2
-cam = cam[:s0] + 'function setZoom(z) {\n  zoom = clamp(z, 1, 3); VWc = RW * zoom;\n  ctx = new Px(VWc, H); fxCtx = new Px(VWc, H); fxOut = new Px(VWc, H);\n  camX = clamp(camX, 0, W - VWc);\n}\n' + cam[s1:]
+cam = cam[:s0] + 'function setZoom(z) {\n  zoom = clamp(z, 1, 3); VWc = RW * zoom;\n  sizeCanvas();\n  camX = clamp(camX, 0, W - VWc);\n}\n' + cam[s1:]
 cam = cam.replace(', drag = null, wheelAcc = 0, wheelLock = 0;', ', drag = null;')
 
 dom = section('DOM', 'camera: 1 to 3 rooms in view')

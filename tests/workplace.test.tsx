@@ -737,7 +737,7 @@ test('a subscription sees its plan windows, never dollars; an API key sees dolla
   expect(s).toContain('API · $1.23 this session · 21.5k tokens since the office opened')
 })
 
-test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', { options: { view: 'single' } }, async ($, on) => {
+test('in a 2/3-room view, room tabs pin rooms side by side; Unpin goes back to the camera', { options: { view: 'single', layout: 'side' } }, async ($, on) => {
   const w = world(on)
   await start($)
   const svgOf = async (u: { find(q: object): Promise<{ props: { source?: unknown } } | undefined> }) => String((await u.find({ type: 'Svg' }))?.props.source ?? '')
@@ -1089,5 +1089,106 @@ test('replay plays the latest task again in a second office, then goes back to l
   expect(await ui.find({ type: 'Text', text: /^Replay/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'replay' })).toBeDefined()
   await ui.unmount()
+})
+
+// ---- layout: stacked in a tall pane, side by side in a wide one ----
+const paneOf = (cols: number, rows: number) => ({ ...PANE, props: { ...PANE.props, bodyColumns: cols, scroll: { offset: 0, bodyRows: rows } } })
+const svgSize = async (u: Mounted): Promise<{ w: number; h: number; box: string }> => {
+  const src = String((await u.find({ type: 'Svg' }))?.props.source ?? '')
+  const m = /^<svg [^>]*?width="(\d+)" height="(\d+)" viewBox="([^"]+)"/.exec(src)!
+  return { w: +m[1]!, h: +m[2]!, box: m[3]! }
+}
+
+test('the split view stacks its rooms in a tall pane and puts them side by side in a wide one', async ($, on) => {
+  const w = world(on)
+  await start($)
+  // a tall, narrow pane (about 690 x 1050 px): Boardroom above Open office, as large as the height allows
+  let ui: Mounted = await $.ui.mount({ ...paneOf(92, 58), surface: 'desktop' })
+  let p = await svgSize(ui)
+  expect(p.box).toBe('0 0 240 352')
+  expect(p.w).toBeGreaterThan(400)
+  expect(Math.abs(p.h / p.w - 352 / 240)).toBeLessThan(0.02)
+  let s = await crew($)
+  expect(s).toContain('· stacked ·')
+  expect(s).toMatch(/desktop 92×58 cells · stacked · picture \d+ px/)
+  // the work still shows in the bottom slot
+  await $.prompt.submit(prompt('Build it'))
+  await $.tool.call({ tool: 'Edit', file_path: '/w/a.ts', old_string: 'a', new_string: 'b' } as never)
+  await w.clock.advance(1500)
+  ui = await remount($, ui)
+  expect((await svgSize(ui)).box).toBe('0 0 240 352')
+  // a wide pane: side by side, filling the width (more than two pixels per office pixel)
+  await ui.unmount()
+  ui = await $.ui.mount({ ...paneOf(240, 60), surface: 'desktop' })
+  p = await svgSize(ui)
+  expect(p.box).toBe('0 0 480 176')
+  expect(p.w).toBeGreaterThan(960)
+  expect(await crew($)).not.toContain('stacked')
+  await ui.unmount()
+})
+
+test('stacked rooms: a ship puts the town hall in a slot, and its party in that slot', async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  let ui: Mounted = await $.ui.mount({ ...paneOf(92, 58), surface: 'desktop' })
+  await $.prompt.submit(prompt('Ship it'))
+  await $.tool.call({ tool: 'Bash', command: 'git push origin main' } as never)
+  await $.turn.complete(turnDone as never)
+  let src = ''
+  for (let i = 0; i < 40 && !/<svg x="0" y="\d+" width="240" height="176">/.test(src); i++) {
+    await w.clock.advance(250)
+    ui = await remount($, ui)
+    src = String((await ui.find({ type: 'Svg' }))?.props.source ?? '')
+  }
+  expect(src).toContain('viewBox="0 0 240 352"')
+  expect(src).toMatch(/<svg x="0" y="(0|176)" width="240" height="176">/) // the confetti box is the town hall's slot
+  expect(await crew($)).toMatch(/View: Town hall \+ Boardroom/)
+  await ui.unmount()
+})
+
+test('the layout setting forces side by side or stacked', { options: { layout: 'side' } }, async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(92, 58), surface: 'desktop' })
+  expect((await svgSize(ui)).box).toBe('0 0 480 176')
+  await ui.unmount()
+})
+
+test('a terminal draws the stacked office when the setting asks for it', { options: { layout: 'stacked', terminalArt: 'blocks' } }, async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(60, 60), surface: 'terminal' })
+  const raster = await ui.find({ type: 'Raster', key: 'view' })
+  // 240 x 352 office pixels: taller than wide
+  expect(Number(raster?.props.rows)).toBeGreaterThan(Number(raster?.props.columns) / 2)
+  expect(await crew($)).toContain('· stacked ·')
+  await ui.unmount()
+})
+
+test('with every slot pinned, the tab row lists only rooms on screen, not where the camera went', async ($, on) => {
+  const w = world(on)
+  await start($)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'room-5' }) // pin the Open office too: both slots pinned
+  await ui.press({ key: 'cam' }) // manual camera
+  for (let i = 0; i < 3; i++) { await ui.press({ key: 'prev' }); await w.clock.advance(1000) } // the camera moves off to the Reception
+  ui = await remount($, ui)
+  for (const r of [0, 2]) expect(await ui.find({ type: 'Button', key: `room-${r}` })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'room-3' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'room-5' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('token counts of a million or more read as M', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Big'))
+  await $.turn.start({ text: 'Big', turnId: 't1' } as never)
+  w.step.usage = { model: 'claude-opus-5-5', input_tokens: 40000, cache_read_input_tokens: 2400000, cache_creation_input_tokens: 0, output_tokens: 1200 }
+  await (await stepOpen($, w))()
+  await w.clock.advance(250)
+  const s = await crew($)
+  expect(s).toContain('Tokens 2.4M in (98% cached)')
+  expect(s).toContain('2.4M tokens since the office opened')
 })
 

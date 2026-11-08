@@ -1,4 +1,4 @@
-// Run: npx tsx tools/fluid-harness.ts shipped=1 zoom=1   (or zoom=3 pins=1,3,5)
+// Run: npx tsx tools/fluid-harness.ts shipped=1 zoom=1   (or zoom=3 pins=1,3,5; stacked=1 stacks them)
 // Measures how fluid the Svg pane is: replays a busy, seeded minute of office
 // work, applies the hooks module's film policy (copied from register.tsx
 // currentFilm, with knobs), and at 16 samples a second compares what the pane
@@ -21,10 +21,12 @@ const P = {
   adaptive: args.adaptive === '1', // film only as far ahead as films have lately been used
   shipped: args.shipped === '1',   // the policy as shipped in register.tsx (overrides the knobs above)
   slide: args.slide !== '0',
+  stacked: args.stacked === '1', // 2/3 rooms one above another
 }
 function mulberry32(a: number) { return () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 } }
 const o: any = createOffice({ random: mulberry32(P.seed), theme: 'night', motion: 'auto', zoom: 1 })
 o.setZoom(P.zoom); for (const r of P.pins) o.togglePin(r)
+if (P.stacked) o.setStacked(true)
 const R = mulberry32(P.seed * 31 + 1)
 
 // ---- a busy minute ----

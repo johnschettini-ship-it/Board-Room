@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -88,6 +88,17 @@
       "options": [
         "split",
         "single"
+      ]
+    },
+    "layout": {
+      "type": "string",
+      "title": "Room layout",
+      "description": "With 2 or 3 rooms in view. auto: one above another in a tall pane, side by side in a wide one, whichever draws the rooms larger. stacked or side: always that way.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "stacked",
+        "side"
       ]
     },
     "quickActions": {

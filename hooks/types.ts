@@ -139,7 +139,7 @@ export type Snapshot = {
     done: number
   }[]
   receptionist: string | null
-  view: { zoom: number; start: number; room: string; slots: number[] | null; pinned: string[]; autoCam: boolean }
+  view: { zoom: number; stacked: boolean; start: number; room: string; slots: number[] | null; pinned: string[]; autoCam: boolean }
   particles: { total: number; confetti: number }
   status: StatusLine
   ticker: Ticker
@@ -161,7 +161,7 @@ export interface Office {
    * run then replays the same random draws until the next outside event.
    * onFrame may return false to stop early. Returns the frames filmed.
    */
-  film(count: number, dt: number, onFrame: (k: number, frame: Frame, view: { key: string; hallX: number | null; camX?: number }) => boolean | void, cut?: boolean | { x: number; w: number }): number
+  film(count: number, dt: number, onFrame: (k: number, frame: Frame, view: { key: string; hallX: number | null; hallY?: number; camX?: number }) => boolean | void, cut?: boolean | { x: number; w: number }): number
   /** The live camera's x over the next frames (no drawing), whether rooms are pinned, and the view width. */
   camPath(count: number, dt: number): { xs: number[]; pinned: boolean; width: number }
   /** 2/3-room view: pin or unpin a room (pinned rooms show side by side); clearPins unpins all. */
@@ -210,6 +210,9 @@ export interface Office {
   readonly planMode: boolean
   /** Split view: the free slot stays on the work room (the town hall during a ship). */
   lockWorkSlot(on: boolean): void
+  /** 2/3-room view: rooms one above another (one room wide) instead of side by side. */
+  setStacked(on: boolean): void
+  readonly stacked: boolean
   /** The plan cards of the latest task, with timing and workers. */
   cards(): CardInfo[]
   /** A crew member's last calls (up to 12, across turns), newest first. */

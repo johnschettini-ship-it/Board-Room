@@ -28,6 +28,7 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 
 - The pane opens when a session starts. Turn this off with the `openOnStart` setting.
 - **Standard view:** two rooms, the Boardroom pinned (◆) beside the room where the work is: the Open office while the crew works, the Town hall when work ships. Set `view` to `single` for one room with a camera that follows the work.
+- **Stacked or side by side:** with 2 or 3 rooms in view, a tall pane stacks them one above another and a wide pane puts them side by side, whichever draws the rooms larger. The picture grows with the pane (wider than before in a wide pane) and stops where the text and buttons below it need room. Set `layout` to `stacked` or `side` to keep one. `/workplace status` shows the pane's size in cells, the layout and the picture's width.
 - **Plan mode:** while Claude Code is in plan mode, the whole crew meets in the Boardroom and does its research at the table. When the plan is approved (or the mode changes) everyone goes to their desks.
 - The split view's second slot stays on the Open office (the Town hall during a ship), even when the crew takes a break elsewhere.
 - The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
@@ -104,6 +105,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 | `walkSpeed` | normal | How fast the crew walks: `normal` is the office page's own pace, `slow` is calmer, `fast` hurries. |
 | `view` | split | `split`: two rooms, the Boardroom pinned beside the work. `single`: one room; the camera follows the work and visits the Boardroom only for briefings. |
+| `layout` | auto | With 2 or 3 rooms in view: `auto` stacks them in a tall pane and puts them side by side in a wide one; `stacked` or `side` always. A terminal keeps side by side unless this says `stacked`. |
 | `quickActions` | off | Buttons for common requests: Run tests, Review, Commit, Status. `fill` puts the request in the prompt box after your draft (you press Enter); `send` sends it to Claude at once. |
 | `toolChips` | false | Adds one line under each tool call in the transcript, such as `Brix · Edit auth.ts ✓ 0:03`. Local sessions only. Read at session start. |
 

@@ -1,14 +1,15 @@
 function paint(fx) {
   const slots = viewSlots();
-  if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc); return; }
-  slots.forEach((r, i) => paintSpan(fx, r * RW, i * RW, RW));
+  if (!slots) { paintSpan(fx, Math.round(camX), 0, VWc, 0); return; }
+  const st = isStacked();
+  slots.forEach((r, i) => paintSpan(fx, r * RW, st ? 0 : i * RW, RW, st ? i * H : 0));
 }
-/** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw). */
-function paintSpan(fx, vx, sx, sw) {
+/** Draws world x [vx, vx + sw) at canvas x [sx, sx + sw), canvas rows [sy, sy + H). */
+function paintSpan(fx, vx, sx, sw, sy) {
   const T = THEMES[themeKey], cam = camX, vw = VWc;
   camX = vx; VWc = sw; // culling and label placement below read the view from these
-  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, 0, sw, H); ctx.clip();
-  ctx.setTransform(1, 0, 0, 1, sx - vx, 0);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.beginPath(); ctx.rect(sx, sy, sw, H); ctx.clip();
+  ctx.setTransform(1, 0, 0, 1, sx - vx, sy);
   ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(bgCanvas, 0, 0);
   drawDynamic();
@@ -23,7 +24,7 @@ function paintSpan(fx, vx, sx, sw) {
   items.push({ y: 90, img: tableCanvas }, { y: 119, img: chairCanvas }, { y: 146, img: frontCanvas }, { y: 175, img: hallCanvas });
   items.sort((p, q) => p.y - q.y);
   for (const it of items) if (it.img) ctx.drawImage(it.img, 0, 0); else if (it.n) drawNPC(it.n); else if (it.run) drawRun(it.run); else drawAgent(it.a);
-  ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw);
+  ctx.shade(lightA, W, vx - sx, T.shade[0], T.shade[1], T.shade[2], sx, sx + sw, sy, sy + H);
   drawParticles(fx);
   for (const n of npcs) if (n.bubble && visT < n.bubble.until && vis(n)) { const P = n._P; drawBubble(Math.round(P.x) - 5, P.oyL + P.bob + accTop(n.look) - 13, n.bubble.icon, n.bubble.color); }
   drawRunBubbles();
@@ -45,7 +46,7 @@ function render() {
     for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) { o[i] = b[i]; any = true; } else o[i] = 0; }
     if (any) fxLayer = fxOut;
   }
-  return { width: VWc, height: H, base, fx: fxLayer };
+  return { width: base.width, height: base.height, base, fx: fxLayer };
 }
 function drawLiveLine(x, y) {
   const s = statusLine();
