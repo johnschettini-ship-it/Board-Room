@@ -322,9 +322,13 @@ const cardMark = (st: CardInfo['state']): string => (st === 'done' ? '✓' : st 
 
 // ---- the picture: stacked or side by side, as large as the pane allows ----
 // A pane's size comes in cells of the app's code font (RenderViewport); these
-// are that font's advance and line height, roughly, in CSS pixels.
-const CELL_W = 7.5
-const CELL_H = 18
+// are that font's advance and line height in CSS pixels, as measured on the
+// desktop app (Windows): a 116x63-cell pane drew about 897x1318 px.
+const CELL_W = 7.7
+const CELL_H = 20.5
+/** Height of the text and buttons around the picture: per strip or compute row, and the rest (tabs, buttons, ticker, crew cards). Measured: 6 rows, about 460 px. */
+const TEXT_ROW_PX = 20
+const CHROME_PX = 340
 /** The pane's last size in cells, the picture's width in CSS pixels, and the surface that drew it (for /workplace status). */
 let paneFit: { cols: number; rows: number; width: number; surface: string } | null = null
 /**
@@ -335,7 +339,7 @@ let paneFit: { cols: number; rows: number; width: number; surface: string } | nu
  */
 function fitPicture(o: Office, cols: number, rows: number, textRows: number): { stacked: boolean; width: number } {
   const n = o.zoom, wPx = cols * CELL_W
-  const hPx = Math.max(176, rows * CELL_H - (textRows * 16 + 300))
+  const hPx = Math.max(176, rows * CELL_H - (textRows * TEXT_ROW_PX + CHROME_PX))
   const side = Math.min(wPx / (n * 240), hPx / 176), stack = Math.min(wPx / 240, hPx / (n * 176))
   let stacked = o.stacked
   if (n < 2) stacked = false
@@ -828,8 +832,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'workplace' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
+    // The argument hint reads [show|hide|status]: "[status]" means status.
+    const arg = e.args.trim().toLowerCase().replace(/^\[\s*(.*?)\s*\]$/, '$1')
     if (arg === 'status') return { text: `${summary(ensureOffice())}\n${await paneReport($)}` }
+    // A word the command does not know changes nothing: it only says how to use it.
+    if (!['', 'show', 'open', 'hide', 'close'].includes(arg)) return { text: `Unknown option "${e.args.trim()}". Use /workplace (show or hide), /workplace show, /workplace hide or /workplace status.` }
     // A bare /workplace hides the pane only when it is really on screen; an
     // open pane on a hidden tab, or one waiting for room, is brought forward.
     const pane = (await $.ui.panes()).find(p => p.id === PANE)
