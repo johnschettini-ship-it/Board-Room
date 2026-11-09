@@ -1212,3 +1212,53 @@ test('"/workplace [status]" reports the status; an unknown word never hides the 
   expect(text).toContain('/workplace status')
   expect(w.panes.has('digital-workplace')).toBe(true)
 })
+
+// ---- lighter: film rates by smoothness; no films for a pane the app does not draw ----
+test('films run at the balanced rates by default: 8 fps for two rooms, 10 for one', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  const running = $.tool.call({ tool: 'Bash', command: 'hold' } as never) // stays running: the crew is busy
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await w.clock.advance(500)
+  expect(await crew($)).toContain('· films 8 fps (balanced)')
+  await ui.press({ key: 'zoom-1' })
+  // the rate steps up one film at a time after a change of view
+  let s = ''
+  for (let i = 0; i < 12 && !s.includes('films 10 fps'); i++) { await w.clock.advance(250); ui = await remount($, ui); s = await crew($) }
+  expect(s).toContain('· films 10 fps (balanced)')
+  await ui.unmount()
+  w.hold.release()
+  await running
+})
+
+test('smoothness "smooth" keeps the old rates (20 fps for one room)', { options: { smoothness: 'smooth', view: 'single' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  await w.clock.advance(500)
+  expect(await crew($)).toContain('· films 20 fps (smooth)')
+  await ui.unmount()
+})
+
+test('a pane the app has not drawn for 3 s is not filmed; it still asks for a draw, and a draw wakes it', async ($, on) => {
+  const w = world(on)
+  await start($)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.unmount() // the session goes to the background: nothing draws the pane
+  await $.prompt.submit(prompt('Busy in the background'))
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  await w.clock.advance(4000)
+  expect(await crew($)).toMatch(/not drawn for [3-5] s \(not filming\)/)
+  const before = w.counts.invalidate
+  await w.clock.advance(4000)
+  expect(w.counts.invalidate - before).toBeGreaterThanOrEqual(2) // it keeps asking
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' }) // back in front
+  expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('<svg')
+  const s = await crew($)
+  expect(s).toContain('· drawn')
+  expect(s).not.toContain('not filming')
+  await ui.unmount()
+})

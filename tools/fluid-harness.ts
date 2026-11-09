@@ -1,4 +1,4 @@
-// Run: npx tsx tools/fluid-harness.ts shipped=1 zoom=1   (or zoom=3 pins=1,3,5; stacked=1 stacks them)
+// Run: npx tsx tools/fluid-harness.ts shipped=1 zoom=1   (or zoom=3 pins=1,3,5; stacked=1 stacks them; smoothness=smooth|light)
 // Measures how fluid the Svg pane is: replays a busy, seeded minute of office
 // work, applies the hooks module's film policy (copied from register.tsx
 // currentFilm, with knobs), and at 16 samples a second compares what the pane
@@ -6,6 +6,7 @@
 //   freeze  = the film ran out while the office was moving (picture holds)
 //   wrong   = the shown frame differs from the real one by > 400 px (a stale prediction)
 //   jump    = a new film starts > 400 px away from the frame shown just before
+import { writeFileSync } from 'node:fs'
 import { createOffice } from '../hooks/world.ts'
 import { shoot, filmSvg } from '../hooks/stage.ts'
 
@@ -22,6 +23,10 @@ const P = {
   shipped: args.shipped === '1',   // the policy as shipped in register.tsx (overrides the knobs above)
   slide: args.slide !== '0',
   stacked: args.stacked === '1', // 2/3 rooms one above another
+  baseFps: args.baseFps ? +args.baseFps : 0, // shipped policy: override the film rate for the zoom
+  smoothness: args.smoothness ?? 'balanced', // shipped policy: smooth, balanced or light
+  shotGate: +(args.shotGate ?? 0.25), // shipped policy: seconds between event-driven shots
+  dump: args.dump ?? '', // write every picture sent to the app, with its time, as JSON (for tools/app-bench)
 }
 function mulberry32(a: number) { return () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 } }
 const o: any = createOffice({ random: mulberry32(P.seed), theme: 'night', motion: 'auto', zoom: 1 })
@@ -52,17 +57,20 @@ evs.sort((p, q) => p.t - q.t)
 let horizon = 2, film: any = null, frames: Uint32Array[] = [], lastShot = -Infinity, filmFps = 0, shots = 0, bytes = 0, shootMs = 0
 const DIFF = (a: Uint32Array, b: Uint32Array) => { let d = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++; return d }
 const FILM_FPS = [20, 10, 8, 5, 4]
-const baseFps = (zoom: number): number => (zoom >= 3 ? 8 : zoom === 2 ? 10 : 20)
+// The shipped film rates by smoothness (register.tsx FILM_RATES), for 1 / 2 / 3 rooms in view.
+const RATES: Record<string, number[]> = { smooth: [20, 10, 8], balanced: [10, 8, 5], light: [5, 5, 4] }
+const baseFps = (zoom: number): number => P.baseFps || RATES[P.smoothness]![Math.min(3, Math.max(1, zoom)) - 1]!
 const lowerFps = (f: number): number => FILM_FPS.find(x => x < f) ?? 4
 const higherFps = (f: number, cap: number): number => Math.min(cap, [...FILM_FPS].reverse().find(x => x > f) ?? cap)
 let pans = 0
+const sent: { t: number; svg: string }[] = []
 function maybeShoot(): boolean {
   const idle = o.ticker().phase === 'Idle'
   const elapsed = film ? o.simT - film.startT : 0
   let due: boolean
   if (P.shipped) {
     due = !film || film.zoom !== o.zoom || (film.cutAt !== null && elapsed >= film.cutAt - 1e-6) ||
-      (o.simT - lastShot >= 0.25 && (o.version !== film.version || elapsed >= film.seconds - 0.25))
+      (o.simT - lastShot >= P.shotGate && (o.version !== film.version || elapsed >= film.seconds - 0.25))
   } else {
     const ranOut = film && elapsed >= film.seconds - 1e-6
     due = !film || film.zoom !== o.zoom ||
@@ -89,6 +97,7 @@ function maybeShoot(): boolean {
   if (P.shipped) { const base = baseFps(o.zoom); filmFps = film.cut ? lowerFps(filmFps) : higherFps(filmFps, base) }
   else filmFps = film.cut ? Math.max(4, Math.round(filmFps / 2)) : Math.min(P.fps, filmFps * 2)
   shots++; bytes += filmSvg(film, 0).length
+  if (P.dump) sent.push({ t: +o.simT.toFixed(3), svg: filmSvg(film, 0) })
   return true
 }
 /** The view part of a (possibly wider, sliding) film frame. */
@@ -131,3 +140,4 @@ for (let s = 0; s * SAMPLE < END; s++) {
   k++
 }
 console.log(JSON.stringify({ policy: P, freezeSeconds: +freeze.toFixed(2), stalePct: Math.round(wrong / Math.max(1, aligned) * 100), latencyAvgMs: Math.round(lat.reduce((a, b) => a + b, 0) / Math.max(1, lat.length) * 1000), latencyP90Ms: Math.round((lat.sort((a, b) => a - b)[Math.floor(lat.length * 0.9)] ?? 0) * 1000), snaps: jumps, avgSnapPx: jumps ? Math.round(jumpPx / jumps) : 0, shots, slidingFilms: pans, kbSent: Math.round(bytes / 1024), kbPerShot: Math.round(bytes / 1024 / shots), cpuMsPerSecond: Math.round(shootMs / END) }))
+if (P.dump) writeFileSync(P.dump, JSON.stringify(sent))
