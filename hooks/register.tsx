@@ -326,9 +326,13 @@ const cardMark = (st: CardInfo['state']): string => (st === 'done' ? '✓' : st 
 // desktop app (Windows): a 116x63-cell pane drew about 897x1318 px.
 const CELL_W = 7.7
 const CELL_H = 20.5
-/** Height of the text and buttons around the picture: per strip or compute row, and the rest (tabs, buttons, ticker, crew cards). Measured: 6 rows, about 460 px. */
-const TEXT_ROW_PX = 20
-const CHROME_PX = 340
+/**
+ * Height of the text and buttons around the picture: per strip or compute row,
+ * and the rest (tabs, buttons, ticker, crew cards). Measured on the desktop
+ * app: 2 rows needed about 410 px, 6 rows about 460 px; these keep a margin.
+ */
+const TEXT_ROW_PX = 16
+const CHROME_PX = 390
 /** The pane's last size in cells, the picture's width in CSS pixels, and the surface that drew it (for /workplace status). */
 let paneFit: { cols: number; rows: number; width: number; surface: string } | null = null
 /**
