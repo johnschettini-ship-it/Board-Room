@@ -25,13 +25,14 @@ type Engine = EngineInterface
 type TerminalArt = 'auto' | 'blocks' | 'image'
 type QuickActions = 'off' | 'fill' | 'send'
 type Layout = 'auto' | 'stacked' | 'side'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout }
+type Smoothness = 'smooth' | 'balanced' | 'light'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout; smoothness: Smoothness }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto', smoothness: 'balanced' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -625,11 +626,15 @@ function dropFrameCaches(): void {
  * The current film, shot again when it runs out, after an outside event (at
  * most once a second, L2 in the design verdict), or at once after a press.
  */
-// Film rates must land on the office's 25 ms steps (40/n fps). Smoother with
-// one room in view, lighter with three (measured: about 11% / 7% / 19% of a
-// core while the crew is busy).
+// Film rates must land on the office's 25 ms steps (40/n fps). The frame rate
+// is what the app pays for (each frame repaints its changes at the drawn size);
+// how often films are shot hardly matters to it. Measured on a busy minute,
+// stacked 2-room view, mod + app (Chromium) in % of one core: smooth 10 fps
+// 11 + 11, balanced 8 fps 10 + 9, light 5 fps 7 + 6; one room drawn 893 px
+// wide: 20 fps 11 + 18, 10 fps 7 + 11. An idle office films one step lower.
 const FILM_FPS = [20, 10, 8, 5, 4]
-const baseFps = (zoom: number): number => (zoom >= 3 ? 8 : zoom === 2 ? 10 : 20)
+const FILM_RATES: Record<Smoothness, [number, number, number]> = { smooth: [20, 10, 8], balanced: [10, 8, 5], light: [5, 5, 4] }
+const baseFps = (zoom: number): number => FILM_RATES[opts.smoothness][Math.min(3, Math.max(1, zoom)) - 1]!
 const lowerFps = (f: number): number => FILM_FPS.find(x => x < f) ?? 4
 const higherFps = (f: number, cap: number): number => Math.min(cap, [...FILM_FPS].reverse().find(x => x > f) ?? cap)
 /** How far ahead to film: about as far as recent films were actually used. */
@@ -694,6 +699,18 @@ async function surfacesNow($: Engine, simT: number): Promise<readonly string[] |
   return surfaceKinds
 }
 
+/**
+ * When the app last drew the pane (wall ms). A session in the background is
+ * not drawn: after DORMANT_MS without a draw the office stops filming (the
+ * picture is shot again on the next draw) and only asks for a draw now and
+ * then, so a pane that comes back into view wakes within PROBE_MS.
+ */
+let drawnAt = 0
+let probeAt = 0
+const DORMANT_MS = 3000
+const PROBE_MS = 2000
+const dormant = (): boolean => !!drawnAt && wallNow - drawnAt > DORMANT_MS
+
 async function tick($: Engine): Promise<void> {
   if (busy) return
   busy = true
@@ -716,10 +733,16 @@ async function tick($: Engine): Promise<void> {
       const v = shown()
       // Svg surfaces play a film on their own: redraw for a new film or new text only.
       // A paused replay shows a still frame.
+      if (!drawnAt) drawnAt = now
       if (pictures) {
         const sig = signature(v)
-        const fresh = replay?.paused ? false : currentFilm(v).fresh
-        if (fresh || sig !== paneSig) { paneSig = sig; redraw = true }
+        if (dormant()) {
+          // Not drawn lately: no films; new text or a probe asks for a draw.
+          if (sig !== paneSig || now - probeAt >= PROBE_MS) { paneSig = sig; probeAt = now; redraw = true }
+        } else {
+          const fresh = replay?.paused ? false : currentFilm(v).fresh
+          if (fresh || sig !== paneSig) { paneSig = sig; redraw = true }
+        }
       }
       // Terminals redraw every frame; an idle office needs only a quarter of the rate.
       if (terminal && !replay?.paused && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
@@ -750,7 +773,9 @@ async function paneReport($: Engine): Promise<string> {
   const pane = (await $.ui.panes()).find(p => p.id === PANE)
   if (!pane) return 'Pane: closed. Run /workplace to show it.'
   const state = `Pane: open · shown ${pane.isShown ? 'yes' : 'no'} · placed ${pane.isPlaced ? 'yes' : 'no'}`
-  const fit = paneFit ? ` · ${paneFit.surface} ${paneFit.cols}×${paneFit.rows} cells · ${ensureOffice().stacked ? 'stacked' : 'side by side'} · picture ${paneFit.width} px` : ''
+  const drawn = drawnAt ? (dormant() ? ` · not drawn for ${Math.round((wallNow - drawnAt) / 1000)} s (not filming)` : ' · drawn') : ''
+  const rate = film ? ` · films ${Math.round(1 / film.dt)} fps (${opts.smoothness})` : ''
+  const fit = (paneFit ? ` · ${paneFit.surface} ${paneFit.cols}×${paneFit.rows} cells · ${ensureOffice().stacked ? 'stacked' : 'side by side'} · picture ${paneFit.width} px` : '') + rate + drawn
   if (pane.isPlaced) return state + fit
   if (!lastOpenReason) { const r = await $.ui.open({ id: PANE, title: TITLE }); lastOpenReason = r.isPlaced ? '' : r.reason }
   return lastOpenReason ? `${state} · engine says: ${lastOpenReason}` : state
@@ -801,6 +826,7 @@ export const register: Register = (on, options) => {
     view: options.view === 'single' ? 'single' : 'split',
     quickActions: options.quickActions === 'fill' || options.quickActions === 'send' ? options.quickActions : 'off',
     layout: options.layout === 'stacked' || options.layout === 'side' ? options.layout : 'auto',
+    smoothness: options.smoothness === 'smooth' || options.smoothness === 'light' ? options.smoothness : 'balanced',
   }
 
   on('session.start', async ($, e, next) => {
@@ -1008,6 +1034,7 @@ export const register: Register = (on, options) => {
   }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => {
+    drawnAt = wallNow
     const live = ensureOffice()
     // While a replay is open, the pane (pictures, strip, crew, buttons) shows it; the status bar stays live.
     const o = shown()
