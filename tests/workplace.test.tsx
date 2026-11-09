@@ -831,7 +831,7 @@ test('the standard view: the boardroom pinned beside the work; it shows the town
   await w.clock.advance(2000)
   s = await crew($)
   expect(s).toMatch(/View: Boardroom \+ Open office, 2 room\(s\), pinned Boardroom/)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 200 }, surface: 'desktop' }) // a wide pane: side by side
   expect(String((await ui.find({ type: 'Svg' }))?.props.source ?? '')).toContain('viewBox="0 0 480 176"')
   await ui.unmount()
   await $.tool.call({ tool: 'Bash', command: 'git commit -m x' })
@@ -1192,3 +1192,23 @@ test('token counts of a million or more read as M', async ($, on) => {
   expect(s).toContain('2.4M tokens since the office opened')
 })
 
+
+test('"/workplace [status]" reports the status; an unknown word never hides the pane', async ($, on) => {
+  const w = world(on)
+  await start($)
+  const run = async (args: string) => String(((await $.command.run({ command: 'workplace', args, origin: { kind: 'composer' }, presentation: PRESENTATION } as never)) as { text?: unknown }).text)
+  // the argument hint's brackets typed as they were shown
+  let text = await run('[status]')
+  expect(text).toContain('Phase: Idle')
+  expect(text).toContain('Pane: open')
+  expect(w.panes.has('digital-workplace')).toBe(true)
+  text = await run(' [ Hide ] ')
+  expect(text).toMatch(/hidden/)
+  expect(w.panes.size).toBe(0)
+  await run('show')
+  // an unknown word: how to use it, and the pane stays where it was
+  text = await run('stats')
+  expect(text).toContain('Unknown option "stats"')
+  expect(text).toContain('/workplace status')
+  expect(w.panes.has('digital-workplace')).toBe(true)
+})
