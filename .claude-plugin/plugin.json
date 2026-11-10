@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -110,6 +110,16 @@
         "balanced",
         "smooth",
         "light"
+      ]
+    },
+    "crew": {
+      "type": "string",
+      "title": "Crew row",
+      "description": "compact: one chip per crew member (name, role, a dot while working), which leaves more room for the office picture; press a chip for that member's status, counts and recent calls. cards: the larger cards with portrait, status and counts.",
+      "default": "compact",
+      "options": [
+        "compact",
+        "cards"
       ]
     },
     "quickActions": {

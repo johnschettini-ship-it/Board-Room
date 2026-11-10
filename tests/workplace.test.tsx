@@ -1262,3 +1262,54 @@ test('a pane the app has not drawn for 3 s is not filmed; it still asks for a dr
   expect(s).not.toContain('not filming')
   await ui.unmount()
 })
+
+// ---- compact crew row ----
+type Found = { props: Record<string, unknown>; text?: string } | undefined
+
+test('the crew row is compact by default: one chip each, a dot while working, detail on press', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Test it'))
+  const running = $.tool.call({ tool: 'Bash', command: 'npm test -- hold' } as never) // Pip stays busy
+  await w.clock.advance(500)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    let ui: Mounted = await $.ui.mount({ ...PANE, surface })
+    for (const id of ['nova', 'pax', 'iris', 'kit', 'vale', 'dot']) expect(await ui.find({ type: 'Button', key: `crew-${id}` })).toBeDefined()
+    // no card lines: the status and the counts are in the detail, not under every name
+    expect(await ui.find({ type: 'Text', text: /^(At their desk|Ready at their desk)$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^\d+ done/ })).toBeUndefined()
+    expect(((await ui.find({ type: 'Button', key: 'crew-dot' })) as Found)?.text).toContain('●')
+    expect(((await ui.find({ type: 'Button', key: 'crew-pax' })) as Found)?.text).not.toContain('●')
+    await ui.press({ key: 'crew-dot' })
+    ui = await remount($, ui, surface)
+    expect(await ui.find({ type: 'Text', text: /^Pip · QA · .* · \d+ done/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: "Pip's recent calls" })).toBeDefined()
+    await ui.press({ key: 'crew-dot' }) // unfollow
+    await ui.unmount()
+  }
+  w.hold.release()
+  await running
+})
+
+test('compact leaves the picture more room than cards (same pane)', async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(116, 63), surface: 'desktop' })
+  const p = await svgSize(ui)
+  expect(p.box).toBe('0 0 240 352')
+  expect(p.w).toBeGreaterThan(690) // about 720 px: one row of chips under the picture
+  expect(p.w).toBeLessThan(740)
+  await ui.unmount()
+})
+
+test('crew "cards" keeps the larger cards and the smaller picture', { options: { crew: 'cards' } }, async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(116, 63), surface: 'desktop' })
+  const p = await svgSize(ui)
+  expect(p.w).toBeGreaterThan(580) // about 604 px: three rows of cards under the picture
+  expect(p.w).toBeLessThan(625)
+  expect(await ui.find({ type: 'Text', text: /^(At their desk|Ready at their desk)$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^0 done$/ })).toBeDefined()
+  await ui.unmount()
+})

@@ -36,7 +36,8 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
 - **Room tabs:** the tab row shows the three work rooms (Town hall, Boardroom, Open office) and any room in view. **+N rooms** shows the rest; the coloured squares on it are crew members in those rooms.
 - **Details stay closed until you press them:**
-  - **Crew history:** following a crew member also lists their last 12 calls, newest first: tool, target, pass or fail, time, model and how long ago (`✓ Read a.ts · 0:02 · opus 5.5 · 1m ago`). The history outlives the turn.
+  - **Crew row:** one chip per crew member: name, role and a dot (●) while they work. This leaves the office picture about 20% more height than the older cards (set `crew` to `cards` for those: portrait, status and counts under every name).
+  - **Crew history:** following a crew member (press their chip) shows their status and counts, and lists their last 12 calls, newest first: tool, target, pass or fail, time, model and how long ago (`✓ Read a.ts · 0:02 · opus 5.5 · 1m ago`). The history outlives the turn.
   - **Agent detail:** press a compute row (`main` or a subagent) for its task, type, model and effort, requests, tokens and latest tool call.
   - **Plan cards:** **Cards ▸** beside the ticker lists the plan's cards; press one for its state, how long it was in progress, and which crew members had calls meanwhile (plan items name no crew member, so this is a time overlap).
   - **Screen:** flips the Boardroom screen between this turn's KPIs, the session so far (tokens, calls, requests, time open) and the plan's usage windows (or an API key's dollars).
@@ -102,6 +103,7 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | `motion` | auto | `auto` hides confetti and disco when the system asks for reduced motion. `reduced` always calms the office. `full` always shows everything. |
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | How often a terminal redraws the office, 2 to 10 times a second. In the app the office plays as films; their rate is `smoothness`. |
+| `crew` | compact | `compact`: one chip per crew member, more room for the picture; press a chip for status, counts and recent calls. `cards`: the larger cards. |
 | `smoothness` | balanced | Frames a second of the office in the app, by rooms in view (1 / 2 / 3): `balanced` 10 / 8 / 5, `smooth` 20 / 10 / 8, `light` 5 / 5 / 4. An idle office films one step lower. |
 | `terminalArt` | auto | In a terminal: pictures in kitty, Ghostty and iTerm2, coloured quarter blocks elsewhere (Windows Terminal, VS Code, tmux). `blocks` or `image` forces one. |
 | `walkSpeed` | normal | How fast the crew walks: `normal` is the office page's own pace, `slow` is calmer, `fast` hurries. |

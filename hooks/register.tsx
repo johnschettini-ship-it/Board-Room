@@ -26,13 +26,14 @@ type TerminalArt = 'auto' | 'blocks' | 'image'
 type QuickActions = 'off' | 'fill' | 'send'
 type Layout = 'auto' | 'stacked' | 'side'
 type Smoothness = 'smooth' | 'balanced' | 'light'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout; smoothness: Smoothness }
+type CrewView = 'compact' | 'cards'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout; smoothness: Smoothness; crew: CrewView }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto', smoothness: 'balanced' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto', smoothness: 'balanced', crew: 'compact' }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -333,7 +334,16 @@ const CELL_H = 20.5
  * app: 2 rows needed about 410 px, 6 rows about 460 px; these keep a margin.
  */
 const TEXT_ROW_PX = 16
-const CHROME_PX = 390
+const CHROME_PX = 184
+/**
+ * The crew block under the picture. As cards: three rows, about 206 px
+ * (measured). Compact: one row of chips, about 36 px, two rows where the pane
+ * is narrower than the chips (about 620 px for the six of them).
+ */
+const CREW_CARDS_PX = 206
+const CREW_ROW_PX = 36
+const CREW_CHIPS_PX = 620
+const crewPx = (wPx: number): number => (opts.crew === 'cards' ? CREW_CARDS_PX : Math.ceil(CREW_CHIPS_PX / Math.max(240, wPx)) * CREW_ROW_PX)
 /** The pane's last size in cells, the picture's width in CSS pixels, and the surface that drew it (for /workplace status). */
 let paneFit: { cols: number; rows: number; width: number; surface: string } | null = null
 /**
@@ -344,7 +354,7 @@ let paneFit: { cols: number; rows: number; width: number; surface: string } | nu
  */
 function fitPicture(o: Office, cols: number, rows: number, textRows: number): { stacked: boolean; width: number } {
   const n = o.zoom, wPx = cols * CELL_W
-  const hPx = Math.max(176, rows * CELL_H - (textRows * TEXT_ROW_PX + CHROME_PX))
+  const hPx = Math.max(176, rows * CELL_H - (textRows * TEXT_ROW_PX + CHROME_PX + crewPx(wPx)))
   const side = Math.min(wPx / (n * 240), hPx / 176), stack = Math.min(wPx / 240, hPx / (n * 176))
   let stacked = o.stacked
   if (n < 2) stacked = false
@@ -685,7 +695,7 @@ function signature(o: Office): string {
   const t = o.ticker()
   return [
     truthLines(o).map(l => l.text).join('|'), computeLines(o).map(l => l.text).join('|'),
-    `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => `${c.status}${c.done}${c.selected}`).join('|'),
+    `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => (opts.crew === 'cards' || c.selected ? `${c.status}${c.done}${c.tokens}${c.selected}` : `${c.working}`)).join('|'),
     o.rooms().map(r => `${r.current}${r.inView}${r.pinned}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
     o.screenPage, replay ? `${replay.paused}${Math.floor(replay.clock)}` : '', JSON.stringify(detail), cardsOpen, moreRooms,
     o.selectedId ? o.history(o.selectedId)[0]?.endT ?? '' : '', ensureOffice().replaySize > 1,
@@ -827,6 +837,7 @@ export const register: Register = (on, options) => {
     quickActions: options.quickActions === 'fill' || options.quickActions === 'send' ? options.quickActions : 'off',
     layout: options.layout === 'stacked' || options.layout === 'side' ? options.layout : 'auto',
     smoothness: options.smoothness === 'smooth' || options.smoothness === 'light' ? options.smoothness : 'balanced',
+    crew: options.crew === 'cards' ? 'cards' : 'compact',
   }
 
   on('session.start', async ($, e, next) => {
@@ -1160,6 +1171,7 @@ export const register: Register = (on, options) => {
     const hist = followed ? o.history(followed.id) : []
     const history = followed && (
       <Box key="history" flexDirection="column">
+        {opts.crew === 'compact' && <Text key="crew-detail" dimColor wrap="truncate-end" {...note}>{`${followed.name} · ${followed.roleLabel} · ${followed.status} · ${followed.done} done${followed.tokens ? ` · ${k(followed.tokens)} new tokens` : ''}`}</Text>}
         <Text color={followed.color} bold {...note}>{`${followed.name}'s recent calls`}</Text>
         {hist.length
           ? hist.map((call, i) => (
@@ -1168,6 +1180,18 @@ export const register: Register = (on, options) => {
             </Text>
           ))
           : <Text dimColor {...note}>No calls yet.</Text>}
+      </Box>
+    )
+
+    // Compact: one chip per crew member (name, role, a dot while working). Pressing
+    // one follows them and opens their detail and recent calls below.
+    const chips = opts.crew === 'compact' && (
+      <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
+        {crew.map(c => (
+          <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
+            <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>{c.working ? <Text color={c.color}> ●</Text> : ''}
+          </Button>
+        ))}
       </Box>
     )
 
@@ -1203,7 +1227,7 @@ export const register: Register = (on, options) => {
           {roomRow}
           {controls}
           {quick}
-          <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             {crew.map(c => (
               <Box key={`card-${c.id}`} flexDirection="column" width={26}>
                 <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
@@ -1212,7 +1236,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor wrap="truncate-end">{c.status}</Text>
               </Box>
             ))}
-          </Box>
+          </Box>}
           {history}
         </Box>
       )
@@ -1236,7 +1260,7 @@ export const register: Register = (on, options) => {
         {cardList}
         {computeBox}
         {quick}
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+        {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">
               <Svg source={spriteSvg(o, c.id)} alt={`${c.name}, ${c.roleLabel}`} width={26} height={40} />
@@ -1249,7 +1273,7 @@ export const register: Register = (on, options) => {
               </Box>
             </Box>
           ))}
-        </Box>
+        </Box>}
         {history}
       </Box>
     )
