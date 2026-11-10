@@ -28,7 +28,10 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('ui.panes', () => ({ value: [...panes].map(id => ({ id, title: 'Digital Workplace', isShown: shown, isFocused: false, isPlaced: true })) }))
   on('ui.close', (_, e) => { panes.delete(e.id); return { value: undefined } })
   on('ui.invalidate', () => { counts.invalidate++; return { value: undefined } })
-  on('audio.play', () => { counts.audio++; return { value: undefined } })
+  const sounds: string[] = [], toasts: string[] = [], notes: { text: string; title?: string }[] = []
+  on('audio.play', (_, e) => { counts.audio++; sounds.push(String((e as { clip?: { asset?: unknown } }).clip?.asset ?? '')); return { value: undefined } })
+  on('ui.toast', (_, e) => { toasts.push(String((e as { text?: unknown }).text ?? '')); return { value: undefined } })
+  on('ui.notify', (_, e) => { notes.push({ text: String((e as { text?: unknown }).text ?? ''), title: (e as { title?: string }).title }); return { value: { isSent: true, channel: 'test' } as never } })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   const sent: string[] = []
   on('prompt.submit', (_, e) => { sent.push(e.text); return { text: e.text } })
@@ -45,7 +48,8 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   on('tool.call', (_, e) => {
     const cmd = String((e as { command?: unknown }).command ?? '')
     if (e.tool === 'Bash' && /fail/.test(cmd)) return { isError: true as const, result: 'Exit code 1', text: 'Exit code 1\n1 failing' }
-    if (e.tool === 'Bash' && /hold/.test(cmd)) return new Promise(r => { hold.release = () => r({ result: { ok: true, tool: e.tool } }) })
+    // a call that stays open until the test releases it (a long command, or a question nobody has answered yet)
+    if ((e.tool === 'Bash' || e.tool === 'AskUserQuestion') && /hold/.test(cmd)) return new Promise(r => { hold.release = () => r({ result: { ok: true, tool: e.tool } }) })
     if (e.tool === 'TaskCreate') return { result: { task: { id: '7', subject: String((e as { subject?: unknown }).subject) } } }
     return { result: { ok: true, tool: e.tool } }
   })
@@ -60,7 +64,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
-  return { clock, panes, counts, hold, step, perm, agents, sent }
+  return { clock, panes, counts, hold, step, perm, agents, sent, sounds, toasts, notes }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1262,3 +1266,162 @@ test('a pane the app has not drawn for 3 s is not filmed; it still asks for a dr
   expect(s).not.toContain('not filming')
   await ui.unmount()
 })
+
+// ---- compact crew row ----
+type Found = { props: Record<string, unknown>; text?: string } | undefined
+
+test('the crew row is compact by default: one chip each, a dot while working, detail on press', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Test it'))
+  const running = $.tool.call({ tool: 'Bash', command: 'npm test -- hold' } as never) // Pip stays busy
+  await w.clock.advance(500)
+  for (const surface of ['desktop', 'terminal'] as const) {
+    let ui: Mounted = await $.ui.mount({ ...PANE, surface })
+    for (const id of ['nova', 'pax', 'iris', 'kit', 'vale', 'dot']) expect(await ui.find({ type: 'Button', key: `crew-${id}` })).toBeDefined()
+    // no card lines: the status and the counts are in the detail, not under every name
+    expect(await ui.find({ type: 'Text', text: /^(At their desk|Ready at their desk)$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^\d+ done/ })).toBeUndefined()
+    expect(((await ui.find({ type: 'Button', key: 'crew-dot' })) as Found)?.text).toContain('●')
+    expect(((await ui.find({ type: 'Button', key: 'crew-pax' })) as Found)?.text).not.toContain('●')
+    await ui.press({ key: 'crew-dot' })
+    ui = await remount($, ui, surface)
+    expect(await ui.find({ type: 'Text', text: /^Pip · QA · .* · \d+ done/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: "Pip's recent calls" })).toBeDefined()
+    await ui.press({ key: 'crew-dot' }) // unfollow
+    await ui.unmount()
+  }
+  w.hold.release()
+  await running
+})
+
+test('compact leaves the picture more room than cards (same pane)', async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(116, 63), surface: 'desktop' })
+  const p = await svgSize(ui)
+  expect(p.box).toBe('0 0 240 352')
+  expect(p.w).toBeGreaterThan(690) // about 720 px: one row of chips under the picture
+  expect(p.w).toBeLessThan(740)
+  await ui.unmount()
+})
+
+test('crew "cards" keeps the larger cards and the smaller picture', { options: { crew: 'cards' } }, async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...paneOf(116, 63), surface: 'desktop' })
+  const p = await svgSize(ui)
+  expect(p.w).toBeGreaterThan(580) // about 604 px: three rows of cards under the picture
+  expect(p.w).toBeLessThan(625)
+  expect(await ui.find({ type: 'Text', text: /^(At their desk|Ready at their desk)$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^0 done$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+// ---- "Claude needs you" ----
+test('a permission dialog chimes once, shows a toast and a banner, and the banner goes after a minute', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Deploy it'))
+  const running = $.tool.call({ tool: 'Bash', command: 'deploy hold' } as never)
+  await w.clock.advance(250)
+  expect(w.sounds).not.toContain('sounds/alert.wav') // nothing asked yet
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'deploy hold' } } as never)
+  await w.clock.advance(250)
+  expect(w.sounds.filter(a => a === 'sounds/alert.wav')).toHaveLength(1)
+  expect(w.toasts).toHaveLength(1)
+  expect(w.toasts[0]).toMatch(/^Claude needs you · \w+ needs your OK · Bash deploy hold$/)
+  expect(w.notes).toHaveLength(0) // a native notification only with needsYou "notify"
+  let s = await crew($)
+  expect(s).toMatch(/▲ Claude needs you · \w+ needs your OK · Bash deploy hold · asked 0:00 ago/)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: /^▲ Claude needs you/ }))?.props.bold).toBe(true)
+  await ui.unmount()
+  // no event says when the person answers an approval: the banner leaves after a minute, the call's own line stays
+  for (let i = 0; i < 13; i++) await w.clock.advance(5000)
+  s = await crew($)
+  expect(s).not.toContain('▲ Claude needs you')
+  expect(s).toContain('asked for your OK')
+  expect(w.sounds.filter(a => a === 'sounds/alert.wav')).toHaveLength(1) // it never repeats
+  w.hold.release()
+  await running
+})
+
+test('a question to the person alerts at once and its banner stays until it is answered', { options: { needsYou: 'notify' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Plan the intro'))
+  // the question stays open until the test answers it ("hold")
+  const running = $.tool.call({ tool: 'AskUserQuestion', command: 'hold', questions: [{ question: 'How long?', header: 'Length', options: [], multiSelect: false }] } as never)
+  await w.clock.advance(250)
+  expect(w.sounds).toContain('sounds/alert.wav')
+  expect(w.toasts[0]).toBe('Claude needs you · Zorya asked you a question')
+  expect(w.notes).toEqual([{ text: 'Zorya asked you a question', title: 'Claude needs you · Plan the intro' }])
+  for (let i = 0; i < 20; i++) await w.clock.advance(5000) // 100 s later it still waits: the banner stays
+  const s = await crew($)
+  expect(s).toMatch(/▲ Claude needs you · Zorya asked you a question · waiting 1:4\d/)
+  expect(s).toMatch(/\? Zorya \(Lead\) · AskUserQuestion.* · asked you a question/)
+  expect(w.sounds.filter(a => a === 'sounds/alert.wav')).toHaveLength(1)
+  w.hold.release()
+  await running
+  await w.clock.advance(250)
+  expect(await crew($)).not.toContain('▲ Claude needs you')
+})
+
+test('needsYou "banner" shows the banner with no sound or toast; "off" shows neither', { options: { needsYou: 'banner' } }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Deploy it'))
+  const running = $.tool.call({ tool: 'Bash', command: 'deploy hold' } as never)
+  await w.clock.advance(250)
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'deploy hold' } } as never)
+  await w.clock.advance(250)
+  expect(w.sounds).toHaveLength(0)
+  expect(w.toasts).toHaveLength(0)
+  expect(await crew($)).toContain('▲ Claude needs you')
+  w.hold.release()
+  await running
+})
+
+// ---- text-only pane ----
+test('the Picture button turns the office off (text only, nothing filmed) and on again', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Work'))
+  await $.tool.call({ tool: 'Read', file_path: '/w/a.ts' })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    let ui: Mounted = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: surface === 'terminal' ? 'Raster' : 'Svg' })).toBeDefined()
+    await ui.press({ key: 'picture' })
+    ui = await remount($, ui, surface)
+    // no picture, no room or camera buttons; the text, the crew and the two buttons stay
+    expect(await ui.find({ type: surface === 'terminal' ? 'Raster' : 'Svg' })).toBeUndefined()
+    for (const key of ['room-3', 'zoom-2', 'cam', 'screen', 'replay']) expect(await ui.find({ type: 'Button', key })).toBeUndefined()
+    for (const key of ['picture', 'sound', 'crew-pax']) expect(await ui.find({ type: 'Button', key })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Working|Done|Qix|Zorya/ })).toBeDefined()
+    expect(await crew($)).toContain('· picture off (text only)')
+    await ui.press({ key: 'picture' })
+    ui = await remount($, ui, surface)
+    expect(await ui.find({ type: surface === 'terminal' ? 'Raster' : 'Svg' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'room-3' })).toBeDefined()
+    await ui.unmount()
+  }
+  expect(await crew($)).not.toContain('picture off')
+  void w
+})
+
+test('picture: false opens the pane as text only, and it redraws only for new text', { options: { picture: false } }, async ($, on) => {
+  const w = world(on, true, undefined, ['desktop'])
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Text only: the office is not drawn.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Crew idle/ })).toBeDefined()
+  // idle and text only: nothing changes, so nothing is redrawn
+  await w.clock.advance(500)
+  const before = w.counts.invalidate
+  await w.clock.advance(2500)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(1)
+  await ui.unmount()
+})
+

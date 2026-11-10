@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.10.3",
+  "version": "0.12.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",
@@ -22,6 +22,24 @@
       "title": "Open the office pane at start",
       "description": "Open the Digital Workplace pane when a session starts. /workplace shows or hides it at any time.",
       "default": true
+    },
+    "picture": {
+      "type": "boolean",
+      "title": "Show the office picture",
+      "description": "Off: the pane opens as text only (status strip, compute rows, crew), which costs almost no CPU. The Picture button in the pane turns the office on or off at any time.",
+      "default": true
+    },
+    "needsYou": {
+      "type": "string",
+      "title": "When Claude needs you",
+      "description": "What happens when a permission dialog or a question waits for you. chime: a short sound, a toast, and a banner in the pane and the status line. banner: no sound or toast. notify: chime plus a native notification. off: nothing extra.",
+      "default": "chime",
+      "options": [
+        "chime",
+        "banner",
+        "notify",
+        "off"
+      ]
     },
     "motion": {
       "type": "string",
@@ -110,6 +128,16 @@
         "balanced",
         "smooth",
         "light"
+      ]
+    },
+    "crew": {
+      "type": "string",
+      "title": "Crew row",
+      "description": "compact: one chip per crew member (name, role, a dot while working), which leaves more room for the office picture; press a chip for that member's status, counts and recent calls. cards: the larger cards with portrait, status and counts.",
+      "default": "compact",
+      "options": [
+        "compact",
+        "cards"
       ]
     },
     "quickActions": {

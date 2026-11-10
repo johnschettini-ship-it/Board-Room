@@ -70,7 +70,7 @@ function receiptText() {
   return `${head} in ${fmt(turnEndT - turnT0)} · ${parts.length ? parts.join(', ') : 'no tools'}${failed ? ` · ${failed} failed${fixed ? `, ${fixed} fixed` : ''}` : ''}`;
 }
 function stripInfo() {
-  const running = [...acts.values()].sort((p, q) => p.startT - q.startT).map(x => ({ id: x.id, ...who(x), seconds: simT - x.startT, waiting: !!x.waiting }));
+  const running = [...acts.values()].sort((p, q) => p.startT - q.startT).map(x => ({ id: x.id, ...who(x), seconds: simT - x.startT, waiting: !!x.waiting, asked: x.waiting ? simT - (x.askedT ?? simT) : null }));
   const failures = turnCalls.filter(x => !x.ok && !x.fixed).map(x => ({ id: x.id, ...who(x) }));
   const recent = turnCalls.slice(-3).reverse().map(x => ({ id: x.id, ...who(x), ok: x.ok, seconds: x.endT - x.startT }));
   return {
