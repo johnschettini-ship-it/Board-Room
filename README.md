@@ -34,6 +34,8 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
 - In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
+- **When Claude needs you:** when a permission dialog or a question waits for you, the office plays a short chime, shows a toast, and puts `▲ Claude needs you · …` at the top of the pane and in the status line. A question's banner stays until you answer. An approval's banner leaves after a minute, because no event says when you answer one; the call's own line still says `asked for your OK`. The chime plays once per request and does not need the Sound button. Set `needsYou` to `banner` (no sound or toast), `notify` (adds a native notification) or `off`.
+- **Text only:** the **Picture** button turns the office picture off. The strip, ticker, compute rows and crew stay, nothing is filmed or sent, and the pane redraws only when its text changes, so it costs almost no CPU. Set `picture` to `false` to open the pane this way.
 - **Room tabs:** the tab row shows the three work rooms (Town hall, Boardroom, Open office) and any room in view. **+N rooms** shows the rest; the coloured squares on it are crew members in those rooms.
 - **Details stay closed until you press them:**
   - **Crew row:** one chip per crew member: name, role and a dot (●) while they work. This leaves the office picture about 20% more height than the older cards (set `crew` to `cards` for those: portrait, status and counts under every name).
@@ -100,6 +102,8 @@ In the Claude desktop app the office is full pixel art. In a terminal it is pixe
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `openOnStart` | true | Open the pane when a session starts. |
+| `picture` | true | Show the office picture. `false` opens the pane as text only; the Picture button switches at any time. |
+| `needsYou` | chime | When a permission dialog or a question waits for you: `chime` (sound, toast, banner), `banner`, `notify` (chime plus a native notification) or `off`. |
 | `motion` | auto | `auto` hides confetti and disco when the system asks for reduced motion. `reduced` always calms the office. `full` always shows everything. |
 | `theme` | auto | The world outside the windows: `night`, `sunset`, `day`, or `auto` from the host clock. |
 | `frameRate` | 8 | How often a terminal redraws the office, 2 to 10 times a second. In the app the office plays as films; their rate is `smoothness`. |

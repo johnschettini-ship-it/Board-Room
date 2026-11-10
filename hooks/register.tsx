@@ -27,13 +27,14 @@ type QuickActions = 'off' | 'fill' | 'send'
 type Layout = 'auto' | 'stacked' | 'side'
 type Smoothness = 'smooth' | 'balanced' | 'light'
 type CrewView = 'compact' | 'cards'
-type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout; smoothness: Smoothness; crew: CrewView }
+type NeedsYou = 'off' | 'banner' | 'chime' | 'notify'
+type Options = { openOnStart: boolean; motion: Motion; theme: 'auto' | ThemeId; frameRate: number; terminalArt: TerminalArt; toolChips: boolean; walkSpeed: 'slow' | 'normal' | 'fast'; view: 'split' | 'single'; quickActions: QuickActions; layout: Layout; smoothness: Smoothness; crew: CrewView; needsYou: NeedsYou; picture: boolean }
 type Cells = { no: number; zoom: number; columns: number; rows: number; cells: string }
 type TrackedCard = Card & { seen: number }
 type Encoded = { no: number; zoom: number; svg: string; png: string; width: number; height: number; sizes: [number, number] }
 
 // ---- module state (a reload starts it over; the pane itself stays open) ----
-let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto', smoothness: 'balanced', crew: 'compact' }
+let opts: Options = { openOnStart: true, motion: 'auto', theme: 'auto', frameRate: 8, terminalArt: 'auto', toolChips: false, walkSpeed: 'normal', view: 'split', quickActions: 'off', layout: 'auto', smoothness: 'balanced', crew: 'compact', needsYou: 'chime', picture: true }
 let office: Office | null = null
 let paneOpen = false
 let started = false
@@ -42,6 +43,8 @@ let lastTick = 0
 let frameNo = 0
 let soundOn = false
 let soundBroken = false
+/** Text-only pane: no picture is filmed, drawn or sent (the picture button, or the picture setting). */
+let pictureOn = true
 let loopStop: AbortController | null = null
 let missionNo = 0
 let callSeq = 0
@@ -104,10 +107,27 @@ function statusText(s: StatusLine): string {
 }
 
 // ---- truth strip, compute rows, status line (native text: readable, cheap) ----
-type Line = { key: string; text: string; color?: string; dim?: boolean; agent?: string }
+type Line = { key: string; text: string; color?: string; dim?: boolean; agent?: string; bold?: boolean }
+/**
+ * Calls that wait on the person's own answer: open exactly as long as they
+ * have not answered. An approval is different: no event says when the person
+ * answers it, so its banner shows for a minute at most.
+ */
+const ASKS: Record<string, string> = { AskUserQuestion: 'asked you a question', ExitPlanMode: 'wants you to approve the plan' }
+const NEED_BANNER_S = 60
+const needText = (r: { name: string; tool: string; label: string }): string =>
+  (ASKS[r.tool] ? `${r.name} ${ASKS[r.tool]}` : `${r.name} needs your OK · ${r.tool}${r.label ? ` ${r.label}` : ''}`)
+/** The call the person is asked about now, if the alert is on: the newest question, or an approval asked under a minute ago. */
+function needNow(st: StripInfo): StripInfo['running'][number] | null {
+  if (opts.needsYou === 'off') return null
+  const waiting = st.running.filter(r => r.waiting && (ASKS[r.tool] || (r.asked ?? 0) < NEED_BANNER_S))
+  return waiting[waiting.length - 1] ?? null
+}
 const k = (n: number): string => (n >= 999950 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
 function stripLines(st: StripInfo): Line[] {
   const out: Line[] = []
+  const need = needNow(st)
+  if (need) out.push({ key: 'need', text: `▲ Claude needs you · ${needText(need)} · ${ASKS[need.tool] ? 'waiting' : 'asked'} ${mmss(need.asked ?? 0)}${ASKS[need.tool] ? '' : ' ago'}`, color: '#f4b942', bold: true })
   if (st.receipt) {
     const finished = /^(Done|Shipped)/.test(st.receipt), clean = finished && !st.failures.length
     out.push({ key: 'h', text: `${clean ? '✓' : finished ? '✗' : '■'} ${st.receipt}`, color: clean ? '#6fdc8c' : '#ff9b5c' })
@@ -121,7 +141,7 @@ function stripLines(st: StripInfo): Line[] {
     const model = r.model && (r.sub || r.model !== st.mainModel) ? ` · ${r.model}` : ''
     const head = `${r.name} (${r.role}) · ${r.tool}${r.label ? ` · ${r.label}` : ''}${model}`
     out.push(r.waiting
-      ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · asked for your OK`, color: '#f4b942' }
+      ? { key: `r${r.id}`, text: `? ${head} · ${mmss(r.seconds)} · ${ASKS[r.tool] ?? 'asked for your OK'}`, color: '#f4b942' }
       : { key: `r${r.id}`, text: `● ${head} · ${mmss(r.seconds)}`, color: r.color })
   }
   if (st.running.length > 4) out.push({ key: 'rm', text: `  +${st.running.length - 4} more running`, dim: true })
@@ -209,6 +229,8 @@ function computeLines(o: Office): Line[] {
 }
 function statusBar(o: Office): string | undefined {
   const st = o.strip(), on = o.machines().on, power = on ? ` · ⚡${on}` : ''
+  const need = needNow(st)
+  if (need) return `Workplace: ▲ Claude needs you · ${needText(need)}${power}`
   const r = st.running.find(x => x.waiting) ?? st.running[st.running.length - 1]
   if (r) return `Workplace: ${r.name} ▸ ${r.tool}${r.label ? ` ${r.label}` : ''} ${mmss(r.seconds)}${r.waiting ? ' · asked for your OK' : ''}${st.running.length > 1 ? ` +${st.running.length - 1}` : ''}${power}`
   if (st.thinking !== null) return `Workplace: Zorya thinking ${mmss(st.thinking)}${power}`
@@ -604,6 +626,25 @@ function spriteSvg(o: Office, id: string): string {
   return s
 }
 
+/** Wall time of the last alert: several dialogs at once are one alert. */
+let alertAt = -Infinity
+/**
+ * Claude needs the person (a permission dialog went to them, or a question):
+ * a chime and a toast, and with needsYou "notify" a native notification too.
+ * The strip's banner and the status line follow from the office's own state.
+ * The chime does not need the Sound button: that one is the music and effects.
+ */
+function alertNeedsYou($: Engine): void {
+  if (opts.needsYou !== 'chime' && opts.needsYou !== 'notify') return
+  if (wallNow - alertAt < 3000) return
+  alertAt = wallNow
+  const o = ensureOffice(), need = needNow(o.strip())
+  const text = need ? needText(need) : 'a call is waiting for you', task = o.ticker().title
+  if (!soundBroken) void $.audio.play({ asset: 'sounds/alert.wav' }).catch(() => {})
+  try { $.ui.toast(`Claude needs you · ${text}`, { timeoutMs: 8000 }) } catch { /* no toasts here */ }
+  if (opts.needsYou === 'notify') void $.ui.notify(text, { title: `Claude needs you${task ? ` · ${clipText(task, 40)}` : ''}` }).catch(() => {})
+}
+
 function playSfx($: Engine, kind: Sfx): void {
   if (!soundOn || soundBroken) return
   void $.audio.play({ asset: `sounds/${kind}.wav` }).catch(() => {})
@@ -698,7 +739,7 @@ function signature(o: Office): string {
     `${t.phase}${t.total}${t.done}${t.duets}${t.clock}`, o.crew().map(c => (opts.crew === 'cards' || c.selected ? `${c.status}${c.done}${c.tokens}${c.selected}` : `${c.working}`)).join('|'),
     o.rooms().map(r => `${r.current}${r.inView}${r.pinned}${r.agents.map(a => a.color).join('')}`).join(','), o.zoom, o.autoCam, soundOn, soundBroken,
     o.screenPage, replay ? `${replay.paused}${Math.floor(replay.clock)}` : '', JSON.stringify(detail), cardsOpen, moreRooms,
-    o.selectedId ? o.history(o.selectedId)[0]?.endT ?? '' : '', ensureOffice().replaySize > 1,
+    o.selectedId ? o.history(o.selectedId)[0]?.endT ?? '' : '', ensureOffice().replaySize > 1, pictureOn,
   ].join('#')
 }
 
@@ -750,12 +791,14 @@ async function tick($: Engine): Promise<void> {
           // Not drawn lately: no films; new text or a probe asks for a draw.
           if (sig !== paneSig || now - probeAt >= PROBE_MS) { paneSig = sig; probeAt = now; redraw = true }
         } else {
-          const fresh = replay?.paused ? false : currentFilm(v).fresh
+          const fresh = replay?.paused || !pictureOn ? false : currentFilm(v).fresh
           if (fresh || sig !== paneSig) { paneSig = sig; redraw = true }
         }
       }
       // Terminals redraw every frame; an idle office needs only a quarter of the rate.
-      if (terminal && !replay?.paused && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      if (terminal && pictureOn && !replay?.paused && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      // Text only on a terminal: redraw for new text, not every frame.
+      if (terminal && !pictureOn && !pictures) { const sig = signature(v); if (sig !== paneSig) { paneSig = sig; redraw = true } }
       if (redraw) $.ui.invalidate('ui.render')
     }
     const bar = statusBar(o)
@@ -784,7 +827,7 @@ async function paneReport($: Engine): Promise<string> {
   if (!pane) return 'Pane: closed. Run /workplace to show it.'
   const state = `Pane: open · shown ${pane.isShown ? 'yes' : 'no'} · placed ${pane.isPlaced ? 'yes' : 'no'}`
   const drawn = drawnAt ? (dormant() ? ` · not drawn for ${Math.round((wallNow - drawnAt) / 1000)} s (not filming)` : ' · drawn') : ''
-  const rate = film ? ` · films ${Math.round(1 / film.dt)} fps (${opts.smoothness})` : ''
+  const rate = !pictureOn ? ' · picture off (text only)' : film ? ` · films ${Math.round(1 / film.dt)} fps (${opts.smoothness})` : ''
   const fit = (paneFit ? ` · ${paneFit.surface} ${paneFit.cols}×${paneFit.rows} cells · ${ensureOffice().stacked ? 'stacked' : 'side by side'} · picture ${paneFit.width} px` : '') + rate + drawn
   if (pane.isPlaced) return state + fit
   if (!lastOpenReason) { const r = await $.ui.open({ id: PANE, title: TITLE }); lastOpenReason = r.isPlaced ? '' : r.reason }
@@ -838,7 +881,10 @@ export const register: Register = (on, options) => {
     layout: options.layout === 'stacked' || options.layout === 'side' ? options.layout : 'auto',
     smoothness: options.smoothness === 'smooth' || options.smoothness === 'light' ? options.smoothness : 'balanced',
     crew: options.crew === 'cards' ? 'cards' : 'compact',
+    needsYou: options.needsYou === 'off' || options.needsYou === 'banner' || options.needsYou === 'notify' ? options.needsYou : 'chime',
+    picture: options.picture !== false,
   }
+  pictureOn = opts.picture
 
   on('session.start', async ($, e, next) => {
     try {
@@ -922,6 +968,8 @@ export const register: Register = (on, options) => {
     try {
       route = routeTool(tool, input, SELF_PREFIX)
       opened = before(route, tool, input, id, (e as { agentId?: string }).agentId)
+      // A question to the person waits on them from its first moment, dialog event or not.
+      if (opened && tool === 'AskUserQuestion' && ensureOffice().markWaiting(tool)) alertNeedsYou($)
     } catch { /* never in the way of a tool */ }
     let ok = false
     try {
@@ -1024,7 +1072,7 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     try {
       const decided = r as { decision?: unknown; block?: unknown } | undefined
-      if (decided?.decision === undefined && !decided?.block && ensureOffice().markWaiting(String(e.tool_name))) frameNo++
+      if (decided?.decision === undefined && !decided?.block && ensureOffice().markWaiting(String(e.tool_name))) { frameNo++; alertNeedsYou($) }
     } catch { /* never in the way */ }
     return r
   }).catch(($, e, next) => next(e))
@@ -1062,7 +1110,8 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e) as Kit
     // The layout follows the pane's shape (Svg surfaces; a terminal keeps it, unless the setting forces one).
     let pictureW: number | null = null
-    if (!terminal && e.props.bodyColumns > 0) {
+    if (!pictureOn) paneFit = null
+    else if (!terminal && e.props.bodyColumns > 0) {
       const fit = fitPicture(o, e.props.bodyColumns, e.props.scroll?.bodyRows ?? 40, truthLines(o).length + computeLines(o).length)
       setLayout(fit.stacked)
       pictureW = fit.width
@@ -1102,13 +1151,29 @@ export const register: Register = (on, options) => {
       replay?.office.setScreenPage(p)
       redraw()
     }
-    const controls = (
+    const togglePicture = (): void => {
+      pictureOn = !pictureOn
+      if (!pictureOn && replay) stopReplay()
+      resetStage()
+      redraw()
+    }
+    const pictureButton = <Button key="picture" label={pictureOn ? 'Picture on' : 'Picture off'} variant={pictureOn ? 'primary' : undefined} onPress={togglePicture} />
+    const soundButton = <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
+    // Text only: the strip, ticker, compute rows and crew stay; the picture and its room and camera buttons go.
+    const controls = !pictureOn ? (
+      <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
+        {pictureButton}
+        {soundButton}
+        <Text dimColor {...note}>Text only: the office is not drawn.</Text>
+      </Box>
+    ) : (
       <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
         {!terminal && (paneFit?.cols ?? 0) >= 110 && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
         {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
         <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
         {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
-        <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
+        {soundButton}
+        {pictureButton}
         <Button key="screen" label={`Screen: ${PAGE_NAMES[o.screenPage]}`} onPress={flipScreen} />
         {!replay && live.replaySize > 1 && <Button key="replay" label="▶ Replay task" onPress={() => { if (startReplay()) redraw() }} />}
       </Box>
@@ -1203,6 +1268,20 @@ export const register: Register = (on, options) => {
       const bodyRows = e.props.scroll?.bodyRows ?? 40
       // Too small for pixels: the strip and compute rows alone stay readable.
       const office = e.props.bodyColumns >= 40 && bodyRows >= 14
+      if (!pictureOn) {
+        return (
+          <Box flexDirection="column">
+            {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} bold={l.bold} wrap="truncate-end">{l.text}</Text>)}
+            {tickerRow}
+            {cardList}
+            {computeBox}
+            {controls}
+            {quick}
+            {chips}
+            {history}
+          </Box>
+        )
+      }
       const f = renderFrame(o)
       const maxRows = Math.max(6, bodyRows - 2 - strip.length)
       const fitCols = Math.floor((maxRows * 2 * f.width) / f.height)
@@ -1218,7 +1297,7 @@ export const register: Register = (on, options) => {
       }
       return (
         <Box flexDirection="column">
-          {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+          {strip.map(l => <Text key={`s-${l.key}`} color={l.color} dimColor={l.dim} bold={l.bold} wrap="truncate-end">{l.text}</Text>)}
           {replayBar}
           {view}
           {tickerRow}
@@ -1243,12 +1322,34 @@ export const register: Register = (on, options) => {
     }
 
     const { Svg } = $.ui.resolve(e)
+    if (!pictureOn) {
+      return (
+        <Box flexDirection="column" gap={1}>
+          <Box key="strip" flexDirection="column">
+            {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} bold={l.bold} wrap="truncate-end">{l.text}</Text>)}
+          </Box>
+          {controls}
+          {tickerRow}
+          {cardList}
+          {computeBox}
+          {quick}
+          {chips || <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
+            {crew.map(c => (
+              <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
+                <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
+              </Button>
+            ))}
+          </Box>}
+          {history}
+        </Box>
+      )
+    }
     const cur = replay?.paused ? null : currentFilm(o).film
     const svg = sized(cur ? filmSvg(cur, Math.max(0, o.simT - cur.startT)) : encodeFrame(o).svg, pictureW)
     return (
       <Box flexDirection="column" gap={1}>
         <Box key="strip" flexDirection="column">
-          {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} wrap="truncate-end">{l.text}</Text>)}
+          {strip.map(l => <Text key={`s-${l.key}`} mono size="footnote" color={l.color} dimColor={l.dim} bold={l.bold} wrap="truncate-end">{l.text}</Text>)}
         </Box>
         {replayBar}
         <Box key="view" flexDirection="column" alignItems="center">

@@ -57,7 +57,8 @@ export type StripInfo = {
   open: boolean
   thinking: number | null
   turnSeconds: number
-  running: (Who & { id: string; seconds: number; waiting: boolean })[]
+  /** waiting: its permission dialog (or question) went to the person; asked: seconds since then, else null. */
+  running: (Who & { id: string; seconds: number; waiting: boolean; asked: number | null })[]
   failures: (Who & { id: string })[]
   recent: (Who & { id: string; ok: boolean; seconds: number })[]
   receipt: string | null
