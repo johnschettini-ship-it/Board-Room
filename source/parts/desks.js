@@ -168,8 +168,18 @@ function drawKpis(S) {
   seg('TIME', dim); seg(clockShort(k.seconds), fg);
   const req = `${k.requests} REQ`; drawText(ctx, req, S.x + S.w - 2 - textW(req), y, fg);
 }
+// The chair: the main loop's model sits at the head of the table (the left
+// end) from its first request on, with its name on a tag. Awake while the main
+// loop runs, dozing between turns. Subagents take the other seats.
+const CHAIR_SEAT = 6;
+function chairPlace() {
+  const m = machines.get('main');
+  if (!m || !m.model) return null;
+  const s = SEATS[CHAIR_SEAT];
+  return { m, look: modelLook(m.model), x: s.x, y: s.y, face: s.face, chair: true };
+}
 // The middle top seat is in front of Zorya at the screen: it fills last.
-const RUN_SEATS = [0, 2, 3, 4, 5, 6, 7, 1];
+const RUN_SEATS = [0, 2, 3, 4, 5, 7, 1];
 // More subagents than seats stand along the walls; past that a sign at the
 // door counts the rest. Overflow is counted, never dropped.
 const STANDING = [at(3, 30, 56, 'down'), at(3, 46, 56, 'down'), at(3, 152, 52, 'down'), at(3, 168, 52, 'down'), at(3, 214, 82, 'left'), at(3, 26, 104, 'right')];
@@ -185,7 +195,7 @@ function runPlaces() {
   }
   return { places: out, seated: Math.min(out.length, RUN_SEATS.length), standing: Math.max(0, out.length - RUN_SEATS.length), more: list.length - out.length };
 }
-const runSeats = () => runPlaces().places;
+const runSeats = () => { const c = chairPlace(), list = runPlaces().places; return c ? [c, ...list] : list; };
 function drawRunOverflow() {
   const more = runPlaces().more;
   if (!more) return;
@@ -196,9 +206,21 @@ function drawRunOverflow() {
 function drawRun(r) {
   const fx = Math.round(r.x), fy = Math.round(r.y), vb = visBeat() + r.m.seq * 0.37, bp = vb - Math.floor(vb);
   ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(fx - 4, fy - 1, 9, 2);
+  if (r.chair) {
+    // the chair: at work while the main loop runs, eyes shut between turns
+    const on = r.m.on;
+    paintSprite(ctx, fx - 5, fy - 16, on && bp < 0.2 ? 1 : 0, r.face, on && Math.floor(vb) % 2 ? 'type' : 'down', 0, r.look, !on || ((visT + 0.3) % 4.4) < 0.13, false);
+    return;
+  }
   const arms = r.m.stepOpen > 0 ? 'down' : Math.floor(vb) % 2 ? 'type' : 'down';
   paintSprite(ctx, fx - 5, fy - 16, bp < 0.2 ? 1 : 0, r.face, arms, 0, r.m.look, ((visT + r.m.seq * 0.61) % 4.4) < 0.13, false);
 }
+/** The chair's name tag: the main loop's model, in its colour (dim between turns). */
+function drawChairTag(r) {
+  const s = fitText(shortModel(r.m.model).toUpperCase(), 14), w = textW(s), col = modelColor(r.m.model);
+  const x0 = Math.max(BOARD * RW + 2, Math.round(r.x) - (w >> 1) - 2), y0 = Math.round(r.y) - 16 + accTop(r.look) - 10;
+  rect(ctx, x0, y0, w + 4, 9, 'rgba(8,11,22,0.88)'); drawText(ctx, s, x0 + 2, y0 + 2, r.m.on ? col : mix(col, '#0b0f1a', 0.45));
+}
 function drawRunBubbles() {
-  for (const r of runSeats()) if (r.m.stepOpen > 0) drawBubble(Math.round(r.x) - 5, Math.round(r.y) - 16 + accTop(r.m.look) - 13, 'think', ICON_COLOR.think);
+  for (const r of runSeats()) if (r.chair) drawChairTag(r); else if (r.m.stepOpen > 0) drawBubble(Math.round(r.x) - 5, Math.round(r.y) - 16 + accTop(r.m.look) - 13, 'think', ICON_COLOR.think);
 }

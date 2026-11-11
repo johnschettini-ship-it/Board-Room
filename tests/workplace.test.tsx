@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import { bashLabel, classifyBash, classifyText, isShipCommand, routeTool } from '../hooks/classify.ts'
+import { createOffice } from '../hooks/world.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -716,9 +717,9 @@ test('more subagents than boardroom seats stand, then are counted at the door', 
   await $.prompt.submit(prompt('Fan out'))
   await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
   for (let i = 1; i <= 10; i++) await (await stepOpen($, w, `a${i}`))()
-  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 2 standing')
+  expect(await crew($)).toContain('Boardroom: 7 subagent(s) seated, 3 standing') // the eighth seat is the chair's
   for (let i = 11; i <= 17; i++) await (await stepOpen($, w, `a${i}`))()
-  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 6 standing, +3 counted at the door')
+  expect(await crew($)).toContain('Boardroom: 7 subagent(s) seated, 6 standing, +4 counted at the door')
   expect(await crew($)).toContain('+9 more machines') // the text rows count every run too
 })
 
@@ -1423,5 +1424,85 @@ test('picture: false opens the pane as text only, and it redraws only for new te
   await w.clock.advance(2500)
   expect(w.counts.invalidate - before).toBeLessThanOrEqual(1)
   await ui.unmount()
+})
+
+// ---- model aliens ----
+test('the main loop\'s model chairs the boardroom table: running in a turn, resting after, and it follows a model switch', async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(await crew($)).not.toContain('Chair:') // no request seen yet: the chair is empty
+  await $.prompt.submit(prompt('Hello'))
+  await $.turn.start({ text: 'Hello', turnId: 't1' } as never)
+  const done = await stepOpen($, w) // a request on claude-opus-5-5
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus 5.5 (red top hat) · running')
+  await done()
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 1000, 100) } as never)
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus 5.5 (red top hat) · resting')
+  // the person switches the model: the next request seats that model's alien
+  await $.prompt.submit(prompt('Again'))
+  const it = $.turn.step({ turnId: 't2', index: 0, model: 'claude-fable-5-2', effort: 'high', messageCount: 5 })[Symbol.asyncIterator]()
+  await it.next()
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · running')
+  w.step.release()
+  await it.next()
+})
+
+test('each subagent is its model\'s alien, and the agent detail names how to tell it apart', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fan out'))
+  await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
+  const open = async (agentId: string, model: string) => {
+    const it = $.turn.step({ turnId: 't1', index: 0, model, messageCount: 3, agentId })[Symbol.asyncIterator]()
+    await it.next()
+    return async () => { w.step.release(); await it.next() }
+  }
+  await (await open('a1', 'claude-sonnet-5-5'))()
+  await (await open('a2', 'claude-haiku-5-5'))()
+  await (await open('a3', 'mystery-model'))()
+  await w.clock.advance(250)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const [key, how] of [['a1', 'quill, one eye'], ['a2', 'leaf sprout'], ['a3', 'antennae']] as const) {
+    await ui.press({ key: `agent-${key}` })
+    ui = await remount($, ui)
+    expect(await ui.find({ type: 'Text', text: `    In the boardroom: ${how}` })).toBeDefined()
+  }
+  await ui.unmount()
+})
+test('only the alien changes with the model: the chair and its tag, and a subagent at its seat', () => {
+  const seeded = (a: number) => () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  // the same office, the same events, another model: the boardroom, one room in view (240 x 176)
+  const frame = (main: string, sub: string): Uint32Array => {
+    const o = createOffice({ random: seeded(5), theme: 'night', motion: 'reduced', zoom: 1 })
+    o.setAutoCam(false); o.goRoom(3)
+    o.startMission('Compare'); o.machineStep('main', main); o.machineStep('s1', sub); o.machineStepEnd('s1')
+    for (let k = 0; k < 12; k++) o.advance(0.25)
+    return o.render().base.u32.slice()
+  }
+  /** The box around every pixel that differs, or null when the frames are the same. */
+  const diffBox = (a: Uint32Array, b: Uint32Array): { x0: number; x1: number; y0: number; y1: number } | null => {
+    let box: { x0: number; x1: number; y0: number; y1: number } | null = null
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === b[i]) continue
+      const x = i % 240, y = Math.floor(i / 240)
+      box = box ? { x0: Math.min(box.x0, x), x1: Math.max(box.x1, x), y0: Math.min(box.y0, y), y1: Math.max(box.y1, y) } : { x0: x, x1: x, y0: y, y1: y }
+    }
+    return box
+  }
+  const base = frame('claude-opus-5-5', 'claude-sonnet-5-5')
+  expect(diffBox(base, frame('claude-opus-5-5', 'claude-sonnet-5-5'))).toBeNull() // the run is repeatable
+  // another main model: only the chair (the left head of the table, seat at 57,86) and its tag above it
+  const chair = diffBox(base, frame('claude-fable-5-2', 'claude-sonnet-5-5'))!
+  expect(chair).not.toBeNull()
+  expect(chair.x0).toBeGreaterThanOrEqual(34); expect(chair.x1).toBeLessThanOrEqual(82)
+  expect(chair.y0).toBeGreaterThanOrEqual(50); expect(chair.y1).toBeLessThanOrEqual(92)
+  // another subagent model: only the first subagent seat (90,74)
+  const seat = diffBox(base, frame('claude-opus-5-5', 'claude-haiku-5-5'))!
+  expect(seat).not.toBeNull()
+  expect(seat.x0).toBeGreaterThanOrEqual(84); expect(seat.x1).toBeLessThanOrEqual(96)
+  expect(seat.y0).toBeGreaterThanOrEqual(50); expect(seat.y1).toBeLessThanOrEqual(76)
 })
 

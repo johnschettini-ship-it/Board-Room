@@ -84,7 +84,8 @@ export type Kpis = {
   sessionTokens: number
   sessionRequests: number
   /** Running subagents in the boardroom: seated, standing, and counted at the door. */
-  boardroom: { seated: number; standing: number; more: number }
+  /** Running subagents at the table; chair: the main loop's model at its head (null before its first request). */
+  boardroom: { seated: number; standing: number; more: number; chair: { model: string; kind: 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other'; on: boolean } | null }
 }
 export type Usage = { model?: string; input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 export type MachineInfo = {
@@ -105,6 +106,8 @@ export type MachineInfo = {
   type: string
   /** The latest tool call this run asked for (tool and target), '' before any. */
   lastTool: string
+  /** Which model alien draws this run in the boardroom. */
+  alien: 'fable' | 'opus' | 'sonnet' | 'haiku' | 'other'
 }
 /** A plan card: its state, how long it has been in progress (or took), and who worked during that time. */
 export type CardInfo = { id: string; title: string; state: 'queued' | 'working' | 'done'; seconds: number; workers: string[] }

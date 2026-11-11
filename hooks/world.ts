@@ -774,6 +774,31 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const m = String(model || '').toLowerCase();
     return m.includes('opus') ? '#f4b942' : m.includes('sonnet') ? '#5ec8e5' : m.includes('haiku') ? '#78d98e' : m.includes('fable') ? '#f27fb2' : '#b08cf5';
   }
+  // ---- model aliens ----
+  // Every run sits in the boardroom as its model's alien: the family's colour,
+  // eyes and hat, the same for every run on that model, so the model is read
+  // off the picture. Fable: wizard hat, three eyes. Opus: red top hat. Sonnet: a
+  // quill in a headband, one eye. Haiku: a leaf sprout. Any other model: antenna.
+  const MODEL_KINDS = ['fable', 'opus', 'sonnet', 'haiku'];
+  const modelKind = model => { const m = String(model || '').toLowerCase(); return MODEL_KINDS.find(k => m.includes(k)) || 'other'; };
+  const MODEL_HATS = {
+    fable:  { y0: -4, cols: { v: '#7a5cd6', V: '#4f3aa0', s: '#ffe27a' }, all: ['......v....', '.....vv....', '....vvvv...', '...vvsvvv..', '..vvvvvvv..', '.VVVVVVVVV.'] },
+    opus:   { y0: -3, cols: { t: '#d9463e', b: '#ffd166', T: '#9c2f2a' }, all: ['...ttttt...', '...ttttt...', '...ttttt...', '...bbbbb...', '.TTTTTTTTT.'] },
+    sonnet: { y0: -4, cols: { f: '#f4f8ff', q: '#9fd0e6', h: '#2a86a3' }, all: ['.......f...', '......ff...', '......fq...', '.....fq....', '..hhhhhhh..'] },
+    haiku:  { y0: -3, cols: { l: '#b6f08e', s: '#2f8f4a' }, all: ['..ll...ll..', '...ll.ll...', '....lsl....', '.....s.....'] },
+    other:  null,
+  };
+  const MODEL_EYES = { fable: 'three', opus: 'two', sonnet: 'one', haiku: 'two', other: 'two' };
+  const modelLooks = {};
+  function modelLook(model) {
+    const k = modelKind(model);
+    if (!modelLooks[k]) {
+      const look = makeLook(900 + MODEL_KINDS.indexOf(k), { color: modelColor(model), acc: null, eyes: MODEL_EYES[k], ant: k === 'other' });
+      look.accObj = MODEL_HATS[k]; look.spots = null;
+      modelLooks[k] = look;
+    }
+    return modelLooks[k];
+  }
   function sfx(kind) { if (!filming && opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
   function announce(msg) { lastAnnounce = msg; }
   function log(text, role) { logRing.push({ t: simT, text, role: role || null }); if (logRing.length > 40) logRing.shift(); }
@@ -918,7 +943,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     planInfo.on = on;
     const m = ensureMission();
     if (on) {
-      const seats = shuffle(SEATS.slice()); let si = 0;
+      const seats = shuffle(SEATS.filter((_, i) => i !== CHAIR_SEAT)); let si = 0;
       for (const a of agents) {
         a.meetSeat = a.role === 'lead' ? PRESENT_SPOT : seats[si++];
         if (a.duet || a.delivery) continue;
@@ -1102,7 +1127,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const m = mission;
     if (!m || m.briefed || m.phase !== 'execute' || m.wrapPending) return;
     m.briefed = true; setPhase('huddle');
-    const seats = shuffle(SEATS.slice()); let si = 0;
+    const seats = shuffle(SEATS.filter((_, i) => i !== CHAIR_SEAT)); let si = 0;
     for (const a of agents) {
       if (a.duet || a.delivery || a.runCount > 0) { a.arrived = true; continue; }
       a.deliveries = []; a.state = 'meeting'; a.arrived = false; a.breakDone = 0; a.breakSpot = null;
@@ -1188,14 +1213,15 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     if (!m) {
       if (key === 'main' && !turnOpen) turnStart();
       m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
-        // a subagent sits at the boardroom table while it runs, in its model's colour
-        look: key === 'main' ? null : makeLook(900 + machines.size, { color: modelColor(model), acc: null }) };
+        // a subagent sits at the boardroom table while it runs, as its model's alien
+        // (the main loop's model has the chair at the head of the table: desks.js)
+        look: key === 'main' ? null : modelLook(model) };
       machines.set(key, m);
       if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
       while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
     }
     if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
-    if (model) m.model = String(model);
+    if (model) { m.model = String(model); if (key !== 'main') m.look = modelLook(m.model); }
     if (effort != null) m.effort = String(effort);
     m.requests++; m.stepOpen++; turnTok.requests++; sessTok.requests++;
     if (key === 'main') mainStepOpen++;
@@ -1215,7 +1241,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function machineSeed(key, info) {
     if (!key || key === 'main' || machines.has(key)) return;
     const m = { key, model: '', effort: '', t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: '', description: '', parentId: null, seq: machines.size,
-      look: makeLook(900 + machines.size, { color: modelColor(''), acc: null }) };
+      look: modelLook('') };
     machines.set(key, m);
     machineInfo(key, info);
     touch(null);
@@ -1878,8 +1904,18 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     seg('TIME', dim); seg(clockShort(k.seconds), fg);
     const req = `${k.requests} REQ`; drawText(ctx, req, S.x + S.w - 2 - textW(req), y, fg);
   }
+  // The chair: the main loop's model sits at the head of the table (the left
+  // end) from its first request on, with its name on a tag. Awake while the main
+  // loop runs, dozing between turns. Subagents take the other seats.
+  const CHAIR_SEAT = 6;
+  function chairPlace() {
+    const m = machines.get('main');
+    if (!m || !m.model) return null;
+    const s = SEATS[CHAIR_SEAT];
+    return { m, look: modelLook(m.model), x: s.x, y: s.y, face: s.face, chair: true };
+  }
   // The middle top seat is in front of Zorya at the screen: it fills last.
-  const RUN_SEATS = [0, 2, 3, 4, 5, 6, 7, 1];
+  const RUN_SEATS = [0, 2, 3, 4, 5, 7, 1];
   // More subagents than seats stand along the walls; past that a sign at the
   // door counts the rest. Overflow is counted, never dropped.
   const STANDING = [at(3, 30, 56, 'down'), at(3, 46, 56, 'down'), at(3, 152, 52, 'down'), at(3, 168, 52, 'down'), at(3, 214, 82, 'left'), at(3, 26, 104, 'right')];
@@ -1895,7 +1931,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     }
     return { places: out, seated: Math.min(out.length, RUN_SEATS.length), standing: Math.max(0, out.length - RUN_SEATS.length), more: list.length - out.length };
   }
-  const runSeats = () => runPlaces().places;
+  const runSeats = () => { const c = chairPlace(), list = runPlaces().places; return c ? [c, ...list] : list; };
   function drawRunOverflow() {
     const more = runPlaces().more;
     if (!more) return;
@@ -1906,11 +1942,23 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function drawRun(r) {
     const fx = Math.round(r.x), fy = Math.round(r.y), vb = visBeat() + r.m.seq * 0.37, bp = vb - Math.floor(vb);
     ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(fx - 4, fy - 1, 9, 2);
+    if (r.chair) {
+      // the chair: at work while the main loop runs, eyes shut between turns
+      const on = r.m.on;
+      paintSprite(ctx, fx - 5, fy - 16, on && bp < 0.2 ? 1 : 0, r.face, on && Math.floor(vb) % 2 ? 'type' : 'down', 0, r.look, !on || ((visT + 0.3) % 4.4) < 0.13, false);
+      return;
+    }
     const arms = r.m.stepOpen > 0 ? 'down' : Math.floor(vb) % 2 ? 'type' : 'down';
     paintSprite(ctx, fx - 5, fy - 16, bp < 0.2 ? 1 : 0, r.face, arms, 0, r.m.look, ((visT + r.m.seq * 0.61) % 4.4) < 0.13, false);
   }
+  /** The chair's name tag: the main loop's model, in its colour (dim between turns). */
+  function drawChairTag(r) {
+    const s = fitText(shortModel(r.m.model).toUpperCase(), 14), w = textW(s), col = modelColor(r.m.model);
+    const x0 = Math.max(BOARD * RW + 2, Math.round(r.x) - (w >> 1) - 2), y0 = Math.round(r.y) - 16 + accTop(r.look) - 10;
+    rect(ctx, x0, y0, w + 4, 9, 'rgba(8,11,22,0.88)'); drawText(ctx, s, x0 + 2, y0 + 2, r.m.on ? col : mix(col, '#0b0f1a', 0.45));
+  }
   function drawRunBubbles() {
-    for (const r of runSeats()) if (r.m.stepOpen > 0) drawBubble(Math.round(r.x) - 5, Math.round(r.y) - 16 + accTop(r.m.look) - 13, 'think', ICON_COLOR.think);
+    for (const r of runSeats()) if (r.chair) drawChairTag(r); else if (r.m.stepOpen > 0) drawBubble(Math.round(r.x) - 5, Math.round(r.y) - 16 + accTop(r.m.look) - 13, 'think', ICON_COLOR.think);
   }
 
   // ================= look-ahead (film) =================
@@ -2112,7 +2160,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
     const list = all.slice(0, MAX_MACHINES).map(m => ({
       key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
-      color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '',
+      color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '', alien: modelKind(m.model),
       seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
     }));
     return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
@@ -2125,7 +2173,9 @@ export function createOffice(opts: OfficeOptions = {}): Office {
       planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
       seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
       sessionTokens: sessTok.input + sessTok.cacheRead + sessTok.cacheCreate + sessTok.output, sessionRequests: sessTok.requests,
-      boardroom: (({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
+      boardroom: { ...(({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
+        // the main loop's model at the head of the table
+        chair: (c => (c ? { model: shortModel(c.m.model), kind: modelKind(c.m.model), on: c.m.on } : null))(chairPlace()) },
     };
   }
   function contextInfo() {

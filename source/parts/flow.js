@@ -25,6 +25,31 @@ function modelColor(model) {
   const m = String(model || '').toLowerCase();
   return m.includes('opus') ? '#f4b942' : m.includes('sonnet') ? '#5ec8e5' : m.includes('haiku') ? '#78d98e' : m.includes('fable') ? '#f27fb2' : '#b08cf5';
 }
+// ---- model aliens ----
+// Every run sits in the boardroom as its model's alien: the family's colour,
+// eyes and hat, the same for every run on that model, so the model is read
+// off the picture. Fable: wizard hat, three eyes. Opus: red top hat. Sonnet: a
+// quill in a headband, one eye. Haiku: a leaf sprout. Any other model: antenna.
+const MODEL_KINDS = ['fable', 'opus', 'sonnet', 'haiku'];
+const modelKind = model => { const m = String(model || '').toLowerCase(); return MODEL_KINDS.find(k => m.includes(k)) || 'other'; };
+const MODEL_HATS = {
+  fable:  { y0: -4, cols: { v: '#7a5cd6', V: '#4f3aa0', s: '#ffe27a' }, all: ['......v....', '.....vv....', '....vvvv...', '...vvsvvv..', '..vvvvvvv..', '.VVVVVVVVV.'] },
+  opus:   { y0: -3, cols: { t: '#d9463e', b: '#ffd166', T: '#9c2f2a' }, all: ['...ttttt...', '...ttttt...', '...ttttt...', '...bbbbb...', '.TTTTTTTTT.'] },
+  sonnet: { y0: -4, cols: { f: '#f4f8ff', q: '#9fd0e6', h: '#2a86a3' }, all: ['.......f...', '......ff...', '......fq...', '.....fq....', '..hhhhhhh..'] },
+  haiku:  { y0: -3, cols: { l: '#b6f08e', s: '#2f8f4a' }, all: ['..ll...ll..', '...ll.ll...', '....lsl....', '.....s.....'] },
+  other:  null,
+};
+const MODEL_EYES = { fable: 'three', opus: 'two', sonnet: 'one', haiku: 'two', other: 'two' };
+const modelLooks = {};
+function modelLook(model) {
+  const k = modelKind(model);
+  if (!modelLooks[k]) {
+    const look = makeLook(900 + MODEL_KINDS.indexOf(k), { color: modelColor(model), acc: null, eyes: MODEL_EYES[k], ant: k === 'other' });
+    look.accObj = MODEL_HATS[k]; look.spots = null;
+    modelLooks[k] = look;
+  }
+  return modelLooks[k];
+}
 function sfx(kind) { if (!filming && opts.onSfx) { try { opts.onSfx(kind); } catch (_) {} } }
 function announce(msg) { lastAnnounce = msg; }
 function log(text, role) { logRing.push({ t: simT, text, role: role || null }); if (logRing.length > 40) logRing.shift(); }
@@ -169,7 +194,7 @@ function setPlanMode(on) {
   planInfo.on = on;
   const m = ensureMission();
   if (on) {
-    const seats = shuffle(SEATS.slice()); let si = 0;
+    const seats = shuffle(SEATS.filter((_, i) => i !== CHAIR_SEAT)); let si = 0;
     for (const a of agents) {
       a.meetSeat = a.role === 'lead' ? PRESENT_SPOT : seats[si++];
       if (a.duet || a.delivery) continue;
@@ -353,7 +378,7 @@ function gatherBriefing() {
   const m = mission;
   if (!m || m.briefed || m.phase !== 'execute' || m.wrapPending) return;
   m.briefed = true; setPhase('huddle');
-  const seats = shuffle(SEATS.slice()); let si = 0;
+  const seats = shuffle(SEATS.filter((_, i) => i !== CHAIR_SEAT)); let si = 0;
   for (const a of agents) {
     if (a.duet || a.delivery || a.runCount > 0) { a.arrived = true; continue; }
     a.deliveries = []; a.state = 'meeting'; a.arrived = false; a.breakDone = 0; a.breakSpot = null;
@@ -439,14 +464,15 @@ function machineStep(key, model, effort) {
   if (!m) {
     if (key === 'main' && !turnOpen) turnStart();
     m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
-      // a subagent sits at the boardroom table while it runs, in its model's colour
-      look: key === 'main' ? null : makeLook(900 + machines.size, { color: modelColor(model), acc: null }) };
+      // a subagent sits at the boardroom table while it runs, as its model's alien
+      // (the main loop's model has the chair at the head of the table: desks.js)
+      look: key === 'main' ? null : modelLook(model) };
     machines.set(key, m);
     if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
     while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
   }
   if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
-  if (model) m.model = String(model);
+  if (model) { m.model = String(model); if (key !== 'main') m.look = modelLook(m.model); }
   if (effort != null) m.effort = String(effort);
   m.requests++; m.stepOpen++; turnTok.requests++; sessTok.requests++;
   if (key === 'main') mainStepOpen++;
@@ -466,7 +492,7 @@ function machineDone(key, usage, durationMs) {
 function machineSeed(key, info) {
   if (!key || key === 'main' || machines.has(key)) return;
   const m = { key, model: '', effort: '', t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: '', description: '', parentId: null, seq: machines.size,
-    look: makeLook(900 + machines.size, { color: modelColor(''), acc: null }) };
+    look: modelLook('') };
   machines.set(key, m);
   machineInfo(key, info);
   touch(null);

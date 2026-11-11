@@ -85,7 +85,7 @@ function machinesInfo() {
   const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
   const list = all.slice(0, MAX_MACHINES).map(m => ({
     key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
-    color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '',
+    color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '', alien: modelKind(m.model),
     seconds: m.on ? simT - m.t0 : m.durationMs != null ? m.durationMs / 1000 : (m.endT ?? simT) - m.t0, usage: m.on ? m.live : m.usage,
   }));
   return { list, more: Math.max(0, all.length - MAX_MACHINES), on: all.filter(m => m.on).length };
@@ -98,7 +98,9 @@ function kpiInfo() {
     planDone: m ? m.tasks.filter(t => t.state === 'done').length : 0, planTotal: m ? m.tasks.length : 0,
     seconds: turnOpen ? simT - turnT0 : turnEndT !== null ? turnEndT - turnT0 : 0, requests: turnTok.requests,
     sessionTokens: sessTok.input + sessTok.cacheRead + sessTok.cacheCreate + sessTok.output, sessionRequests: sessTok.requests,
-    boardroom: (({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
+    boardroom: { ...(({ seated, standing, more }) => ({ seated, standing, more }))(runPlaces()),
+      // the main loop's model at the head of the table
+      chair: (c => (c ? { model: shortModel(c.m.model), kind: modelKind(c.m.model), on: c.m.on } : null))(chairPlace()) },
   };
 }
 function contextInfo() {

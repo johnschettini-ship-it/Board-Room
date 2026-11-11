@@ -326,6 +326,8 @@ const agoText = (s: number): string => {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`
 }
+/** How each model's alien is told apart in the boardroom (besides its colour). */
+const ALIENS: Record<MachineInfo['alien'], string> = { fable: 'wizard hat, three eyes', opus: 'red top hat', sonnet: 'quill, one eye', haiku: 'leaf sprout', other: 'antennae' }
 function agentLines(m: MachineInfo): string[] {
   const u = m.usage
   return [
@@ -333,6 +335,7 @@ function agentLines(m: MachineInfo): string[] {
     `Type ${m.type || 'unknown'} · model ${m.seen ? m.model || 'unknown' : 'not seen yet'}${m.effort ? ` · effort ${m.effort}` : ''} · ${m.on ? 'running' : 'finished'} ${mmss(m.seconds)}`,
     `${m.requests} request${m.requests === 1 ? '' : 's'}${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in (${k(u.cache_read_input_tokens)} cached) · ${k(u.output_tokens)} out` : ' · no tokens reported yet'}`,
     `Last tool: ${m.lastTool || 'none yet'}`,
+    m.key === 'main' ? `In the boardroom: the chair at the head of the table (${ALIENS[m.alien]})` : `In the boardroom: ${ALIENS[m.alien]}`,
   ]
 }
 /** A plan card's detail. Plan items name no crew member: "busy meanwhile" is who had calls while it was open. */
@@ -856,6 +859,7 @@ function summary(o: Office): string {
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
+    ...(s.kpis.boardroom.chair ? [`Chair: ${s.kpis.boardroom.chair.model} (${ALIENS[s.kpis.boardroom.chair.kind]}) · ${s.kpis.boardroom.chair.on ? 'running' : 'resting'}`] : []),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'}${s.view.stacked ? ' · stacked' : ''} · pane ${paneOpen ? 'open' : 'hidden'} · screen ${PAGE_NAMES[o.screenPage]}${replay ? ` · replay ${replay.paused ? 'paused' : 'playing'} ${mmss(replay.clock)}/${mmss(replay.end)}` : ''}`,
