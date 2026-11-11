@@ -746,6 +746,23 @@ function signature(o: Office): string {
   ].join('#')
 }
 
+/**
+ * The session's model, as /model shows it: read at start and every 5 seconds,
+ * so the chair holds the right alien before the first request and soon after
+ * a switch. Each request's own model still names the chair while a turn runs;
+ * this only applies a value that changed.
+ */
+let sessionModel = ''
+let modelAt = -Infinity
+async function readModel($: Engine, simT: number): Promise<void> {
+  if (simT - modelAt < 5) return
+  modelAt = simT
+  try {
+    const m = String((await $.session.model()) ?? '')
+    if (m && m !== sessionModel) { sessionModel = m; ensureOffice().setMainModel(m) }
+  } catch { /* not offered here */ }
+}
+
 async function surfacesNow($: Engine, simT: number): Promise<readonly string[] | null> {
   if (simT - surfacesAt < 5) return surfaceKinds
   surfacesAt = simT
@@ -779,6 +796,7 @@ async function tick($: Engine): Promise<void> {
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
+    await readModel($, o.simT)
     if (paneOpen) {
       const kinds = await surfacesNow($, o.simT)
       const terminal = kinds === null || kinds.includes('terminal')
@@ -908,6 +926,7 @@ export const register: Register = (on, options) => {
         }
       } catch { /* not offered here */ }
       // The window size (and the fill, if a response already came) for the context tank.
+      await readModel($, ensureOffice().simT)
       try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }); setAccount(u as never) } catch { /* not offered here */ }
       if (!started) {
         started = true

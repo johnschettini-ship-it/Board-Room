@@ -57,6 +57,9 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   // What $.agent.list() answers: empty unless a test puts agents in it.
   const agents: { id: string; type: string; description: string; status: string; parentId?: string }[] = []
   on('agent.list', () => ({ value: agents as never }))
+  // What $.session.model() answers (the model /model shows): '' means the session does not say.
+  const model = { name: '' }
+  on('session.model', () => ({ value: model.name as never }))
   // A model request that streams one chunk, then waits until the test lets it finish.
   const step = { release: (): void => {}, usage: null as unknown, toolUses: [] as unknown[] }
   on('turn.step', async function* (_, e) {
@@ -65,7 +68,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
-  return { clock, panes, counts, hold, step, perm, agents, sent, sounds, toasts, notes }
+  return { clock, panes, counts, hold, step, perm, agents, sent, sounds, toasts, notes, model }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1504,5 +1507,28 @@ test('only the alien changes with the model: the chair and its tag, and a subage
   expect(seat).not.toBeNull()
   expect(seat.x0).toBeGreaterThanOrEqual(84); expect(seat.x1).toBeLessThanOrEqual(96)
   expect(seat.y0).toBeGreaterThanOrEqual(50); expect(seat.y1).toBeLessThanOrEqual(76)
+})
+
+test('the chair is seated from the session\'s own model: at start, and within 5 s of a switch, with no request', async ($, on) => {
+  const w = world(on)
+  w.model.name = 'claude-opus-5-5[1m]'
+  await start($)
+  await w.clock.advance(250)
+  let s = await crew($)
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · resting') // before any message
+  expect(s).not.toContain('main ·') // seated only: no compute row, nothing powered on
+  expect(s).toContain('Phase: Idle')
+  // /model: the session now runs on another model
+  w.model.name = 'claude-fable-5-2'
+  for (let i = 0; i < 6; i++) await w.clock.advance(1000)
+  expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · resting')
+  // the first request still opens the turn and powers the main machine on
+  await $.prompt.submit(prompt('Hello'))
+  const done = await stepOpen($, w)
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(s).toContain('● main · opus 5.5') // the request's own model names the run while it works
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · running')
+  await done()
 })
 

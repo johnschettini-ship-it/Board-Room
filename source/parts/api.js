@@ -51,7 +51,7 @@ function statusLine() {
 }
 const fmt = s => { const t = Math.max(0, Math.floor(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 function shortModel(model) {
-  return String(model || '?').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
+  return String(model || '?').replace(/\[[^\]]*\]$/, '').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
 }
 const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label, model: act.model ? shortModel(act.model) : '', modelColor: act.model ? modelColor(act.model) : '', sub: !!act.run && act.run !== 'main' }; };
 function receiptText() {
@@ -82,7 +82,7 @@ function stripInfo() {
   };
 }
 function machinesInfo() {
-  const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
+  const all = [...machines.values()].filter(m => m.key !== 'main' || m.requests > 0).sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
   const list = all.slice(0, MAX_MACHINES).map(m => ({
     key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
     color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '', alien: modelKind(m.model),
@@ -166,6 +166,7 @@ return {
   // recorded only when it changes: every classic event reports the mode
   setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
   lockWorkSlot: E(on => { viewLock.work = !!on; }),
+  setMainModel: E(setMainModel),
   setStacked: E(on => { if (!!on !== layout.stacked) setStacked(on); }), get stacked() { return isStacked(); },
   setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
   cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },

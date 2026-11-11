@@ -214,6 +214,8 @@ export interface Office {
   readonly planMode: boolean
   /** Split view: the free slot stays on the work room (the town hall during a ship). */
   lockWorkSlot(on: boolean): void
+  /** The main loop's model as the session reports it (before its first request, or after a switch): seats its alien in the chair. */
+  setMainModel(model: string): void
   /** 2/3-room view: rooms one above another (one room wide) instead of side by side. */
   setStacked(on: boolean): void
   readonly stacked: boolean

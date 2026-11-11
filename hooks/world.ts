@@ -1210,15 +1210,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   // ---- compute: one machine per run (main loop or subagent) ----
   function machineStep(key, model, effort) {
     let m = machines.get(key);
+    // The main loop's first request with no turn open (the office started mid-turn) opens one.
+    if (key === 'main' && !turnOpen && (!m || m.requests === 0)) turnStart();
     if (!m) {
-      if (key === 'main' && !turnOpen) turnStart();
       m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
         // a subagent sits at the boardroom table while it runs, as its model's alien
         // (the main loop's model has the chair at the head of the table: desks.js)
         look: key === 'main' ? null : modelLook(model) };
       machines.set(key, m);
       if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
-      while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
+      while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on && x.key !== 'main').sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
     }
     if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
     if (model) { m.model = String(model); if (key !== 'main') m.look = modelLook(m.model); }
@@ -1245,6 +1246,16 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     machines.set(key, m);
     machineInfo(key, info);
     touch(null);
+  }
+  // The main loop's model as the session itself reports it: before its first
+  // request, or after a model switch. It seats that model's alien in
+  // the chair; no request is counted and nothing powers on.
+  function setMainModel(model) {
+    model = String(model || '');
+    if (!model) return;
+    const m = machines.get('main');
+    if (m) { m.model = model; return; }
+    machines.set('main', { key: 'main', model, effort: '', t0: simT, endT: simT, on: false, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: 'main', description: '', parentId: null, seq: machines.size, look: null });
   }
   function machineInfo(key, info) {
     const m = machines.get(key); if (!m || !info) return;
@@ -2126,7 +2137,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   }
   const fmt = s => { const t = Math.max(0, Math.floor(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
   function shortModel(model) {
-    return String(model || '?').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
+    return String(model || '?').replace(/\[[^\]]*\]$/, '').replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ');
   }
   const who = act => { const a = agentByRole[act.role]; return { name: a.name, role: ROLES[act.role].label, color: ROLES[act.role].color, tool: act.tool, label: act.label, model: act.model ? shortModel(act.model) : '', modelColor: act.model ? modelColor(act.model) : '', sub: !!act.run && act.run !== 'main' }; };
   function receiptText() {
@@ -2157,7 +2168,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     };
   }
   function machinesInfo() {
-    const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
+    const all = [...machines.values()].filter(m => m.key !== 'main' || m.requests > 0).sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
     const list = all.slice(0, MAX_MACHINES).map(m => ({
       key: m.key, name: m.key === 'main' ? 'main' : m.type || 'agent', description: m.description, seen: m.requests > 0 || m.key === 'main', model: shortModel(m.model), effort: m.effort,
       color: modelColor(m.model), on: m.on, requests: m.requests, parentId: m.parentId, type: m.type, lastTool: m.lastTool || '', alien: modelKind(m.model),
@@ -2241,6 +2252,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
     // recorded only when it changes: every classic event reports the mode
     setPlanMode: E(on => { if (!!on !== planInfo.on) recordEvent('setPlanMode', [on]); setPlanMode(on); }), get planMode() { return planInfo.on; },
     lockWorkSlot: E(on => { viewLock.work = !!on; }),
+    setMainModel: E(setMainModel),
     setStacked: E(on => { if (!!on !== layout.stacked) setStacked(on); }), get stacked() { return isStacked(); },
     setContext: R('setContext', setContext), compactStart: R('compactStart', compactStart), compactEnd: R('compactEnd', compactEnd), context: contextInfo,
     cards: cardsInfo, history: historyOf, replayLog: () => replayLog.slice(), get replaySize() { return replayLog.length; },

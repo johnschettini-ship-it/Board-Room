@@ -461,15 +461,16 @@ function compactEnd() {
 // ---- compute: one machine per run (main loop or subagent) ----
 function machineStep(key, model, effort) {
   let m = machines.get(key);
+  // The main loop's first request with no turn open (the office started mid-turn) opens one.
+  if (key === 'main' && !turnOpen && (!m || m.requests === 0)) turnStart();
   if (!m) {
-    if (key === 'main' && !turnOpen) turnStart();
     m = { key, model: String(model || ''), effort: effort == null ? '' : String(effort), t0: simT, endT: null, on: true, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: key === 'main' ? 'main' : '', description: '', parentId: null, seq: machines.size,
       // a subagent sits at the boardroom table while it runs, as its model's alien
       // (the main loop's model has the chair at the head of the table: desks.js)
       look: key === 'main' ? null : modelLook(model) };
     machines.set(key, m);
     if (key !== 'main') log(`A ${m.model || 'model'} machine powered on for a subagent.`, 'lead');
-    while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on).sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
+    while (machines.size > 32) { const oldest = [...machines.values()].filter(x => !x.on && x.key !== 'main').sort((p, q) => p.t0 - q.t0)[0]; if (!oldest) break; machines.delete(oldest.key); }
   }
   if (!m.on) { m.on = true; m.t0 = simT; m.endT = null; m.live = null; m.usage = null; }
   if (model) { m.model = String(model); if (key !== 'main') m.look = modelLook(m.model); }
@@ -496,6 +497,16 @@ function machineSeed(key, info) {
   machines.set(key, m);
   machineInfo(key, info);
   touch(null);
+}
+// The main loop's model as the session itself reports it: before its first
+// request, or after a model switch. It seats that model's alien in
+// the chair; no request is counted and nothing powers on.
+function setMainModel(model) {
+  model = String(model || '');
+  if (!model) return;
+  const m = machines.get('main');
+  if (m) { m.model = model; return; }
+  machines.set('main', { key: 'main', model, effort: '', t0: simT, endT: simT, on: false, requests: 0, usage: null, live: null, stepOpen: 0, durationMs: null, type: 'main', description: '', parentId: null, seq: machines.size, look: null });
 }
 function machineInfo(key, info) {
   const m = machines.get(key); if (!m || !info) return;
