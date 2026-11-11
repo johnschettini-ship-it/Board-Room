@@ -326,6 +326,8 @@ const agoText = (s: number): string => {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`
 }
+/** How each model's alien is told apart in the boardroom (besides its colour). */
+const ALIENS: Record<MachineInfo['alien'], string> = { fable: 'wizard hat, three eyes', opus: 'red top hat', sonnet: 'quill, one eye', haiku: 'leaf sprout', other: 'antennae' }
 function agentLines(m: MachineInfo): string[] {
   const u = m.usage
   return [
@@ -333,6 +335,7 @@ function agentLines(m: MachineInfo): string[] {
     `Type ${m.type || 'unknown'} · model ${m.seen ? m.model || 'unknown' : 'not seen yet'}${m.effort ? ` · effort ${m.effort}` : ''} · ${m.on ? 'running' : 'finished'} ${mmss(m.seconds)}`,
     `${m.requests} request${m.requests === 1 ? '' : 's'}${u ? ` · ${k(u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)} in (${k(u.cache_read_input_tokens)} cached) · ${k(u.output_tokens)} out` : ' · no tokens reported yet'}`,
     `Last tool: ${m.lastTool || 'none yet'}`,
+    m.key === 'main' ? `In the boardroom: the chair at the head of the table (${ALIENS[m.alien]})` : `In the boardroom: ${ALIENS[m.alien]}`,
   ]
 }
 /** A plan card's detail. Plan items name no crew member: "busy meanwhile" is who had calls while it was open. */
@@ -743,6 +746,34 @@ function signature(o: Office): string {
   ].join('#')
 }
 
+/**
+ * The session's model, as /model shows it: read at start and every 5 seconds,
+ * so the chair holds the right alien before the first request and soon after
+ * a switch. Each request's own model still names the chair while a turn runs;
+ * this only applies a value that changed.
+ */
+let sessionModel = ''
+let modelAt = -Infinity
+/**
+ * A model switch (/model, the picker, a fallback, a resume): the resolved model
+ * id goes to the chair at once. The session's own name for it is read now too,
+ * so the 5 s read does not then replace the full id with an alias.
+ */
+async function modelSwitched($: Engine, to: string): Promise<void> {
+  if (!to) return
+  try { ensureOffice().setMainModel(to) } catch { /* never in the way */ }
+  try { sessionModel = String((await $.session.model()) ?? '') } catch { /* not offered here */ }
+  modelAt = ensureOffice().simT
+}
+async function readModel($: Engine, simT: number): Promise<void> {
+  if (simT - modelAt < 5) return
+  modelAt = simT
+  try {
+    const m = String((await $.session.model()) ?? '')
+    if (m && m !== sessionModel) { sessionModel = m; ensureOffice().setMainModel(m) }
+  } catch { /* not offered here */ }
+}
+
 async function surfacesNow($: Engine, simT: number): Promise<readonly string[] | null> {
   if (simT - surfacesAt < 5) return surfaceKinds
   surfacesAt = simT
@@ -776,6 +807,7 @@ async function tick($: Engine): Promise<void> {
     if (opts.theme === 'auto' && frameNo % 240 === 0) o.setTheme(themeFor('auto'))
     while (sfxQueue.length) playSfx($, sfxQueue.shift()!)
     frameNo++
+    await readModel($, o.simT)
     if (paneOpen) {
       const kinds = await surfacesNow($, o.simT)
       const terminal = kinds === null || kinds.includes('terminal')
@@ -856,6 +888,7 @@ function summary(o: Office): string {
     `Phase: ${s.ticker.phase}${s.title ? ` · "${s.title}"` : ''} · ${s.ticker.clock}`,
     `Status: ${statusText(s.status)}`,
     ...s.agents.map(a => `${a.name} (${a.role}): ${status.get(a.id) ?? a.state} · ${a.room}${a.bubble ? ` · bubble ${a.bubble}` : ''}${a.duet ? ` · duet ${a.duet.giver}->${a.duet.taker} (${a.duet.kind})` : ''}${s.tokens[a.role] ? ` · ${k(s.tokens[a.role])} new tokens` : ''}`),
+    ...(s.kpis.boardroom.chair ? [`Chair: ${s.kpis.boardroom.chair.model} (${ALIENS[s.kpis.boardroom.chair.kind]}) · ${s.kpis.boardroom.chair.on ? 'running' : 'resting'}`] : []),
     ...(s.kpis.boardroom.seated ? [`Boardroom: ${s.kpis.boardroom.seated} subagent(s) seated${s.kpis.boardroom.standing ? `, ${s.kpis.boardroom.standing} standing` : ''}${s.kpis.boardroom.more ? `, +${s.kpis.boardroom.more} counted at the door` : ''}`] : []),
     `Cards: ${s.cards.length ? s.cards.map(c => `[${c.state}] ${c.title} -> ${c.role}`).join('; ') : 'none'}`,
     `View: ${s.view.slots ? s.view.slots.map(r => o.rooms()[r]!.name).join(' + ') : s.view.room}, ${s.view.zoom} room(s)${s.view.pinned.length ? `, pinned ${s.view.pinned.join(', ')}` : ''}, auto camera ${s.view.autoCam ? 'on' : 'off'}${s.view.stacked ? ' · stacked' : ''} · pane ${paneOpen ? 'open' : 'hidden'} · screen ${PAGE_NAMES[o.screenPage]}${replay ? ` · replay ${replay.paused ? 'paused' : 'playing'} ${mmss(replay.clock)}/${mmss(replay.end)}` : ''}`,
@@ -904,6 +937,7 @@ export const register: Register = (on, options) => {
         }
       } catch { /* not offered here */ }
       // The window size (and the fill, if a response already came) for the context tank.
+      await readModel($, ensureOffice().simT)
       try { const u = await $.session.usage(); if (u?.context) ensureOffice().setContext({ tokens: u.context.tokens, window: u.context.window }); setAccount(u as never) } catch { /* not offered here */ }
       if (!started) {
         started = true
@@ -1052,6 +1086,12 @@ export const register: Register = (on, options) => {
       // never in the way of a turn
     }
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const r = await next(e)
+    await modelSwitched($, String((e as { to_model?: unknown }).to_model ?? ''))
+    return r
   }).catch(($, e, next) => next(e))
 
   // Plan mode: every classic event reports the session's permission mode. A
@@ -1250,12 +1290,26 @@ export const register: Register = (on, options) => {
 
     // Compact: one chip per crew member (name, role, a dot while working). Pressing
     // one follows them and opens their detail and recent calls below.
-    const chips = opts.crew === 'compact' && (
+    const crewChips = opts.crew === 'compact' && (
       <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
         {crew.map(c => (
           <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
             <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>{c.working ? <Text color={c.color}> ●</Text> : ''}
           </Button>
+        ))}
+      </Box>
+    )
+
+    // The terminal's crew: chips, or a name and a status line each (crew "cards").
+    const termCrew = crewChips || (
+      <Box key="crew" flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {crew.map(c => (
+          <Box key={`card-${c.id}`} flexDirection="column" width={26}>
+            <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
+              <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
+            </Button>
+            <Text dimColor wrap="truncate-end">{c.status}</Text>
+          </Box>
         ))}
       </Box>
     )
@@ -1277,7 +1331,7 @@ export const register: Register = (on, options) => {
             {computeBox}
             {controls}
             {quick}
-            {chips}
+            {termCrew}
             {history}
           </Box>
         )
@@ -1306,16 +1360,7 @@ export const register: Register = (on, options) => {
           {roomRow}
           {controls}
           {quick}
-          {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-            {crew.map(c => (
-              <Box key={`card-${c.id}`} flexDirection="column" width={26}>
-                <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
-                  <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
-                </Button>
-                <Text dimColor wrap="truncate-end">{c.status}</Text>
-              </Box>
-            ))}
-          </Box>}
+          {termCrew}
           {history}
         </Box>
       )
@@ -1333,7 +1378,7 @@ export const register: Register = (on, options) => {
           {cardList}
           {computeBox}
           {quick}
-          {chips || <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
+          {crewChips || <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
             {crew.map(c => (
               <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
                 <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
@@ -1361,7 +1406,7 @@ export const register: Register = (on, options) => {
         {cardList}
         {computeBox}
         {quick}
-        {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+        {crewChips || <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">
               <Svg source={spriteSvg(o, c.id)} alt={`${c.name}, ${c.roleLabel}`} width={26} height={40} />

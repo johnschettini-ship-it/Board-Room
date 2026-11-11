@@ -1,6 +1,6 @@
 {
   "name": "digital-workplace",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Docks the pixel-art Digital Workplace office beside the chat; the crew acts out Claude's real prompts, tool calls and turns.",
   "author": {
     "name": "John Schettini",

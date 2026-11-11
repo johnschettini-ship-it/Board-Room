@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import { bashLabel, classifyBash, classifyText, isShipCommand, routeTool } from '../hooks/classify.ts'
+import { createOffice } from '../hooks/world.ts'
 
 const PLUGIN = 'digital-workplace'
 const STATUS = 'mcp__digital-workplace__crew_status'
@@ -56,6 +57,9 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
   // What $.agent.list() answers: empty unless a test puts agents in it.
   const agents: { id: string; type: string; description: string; status: string; parentId?: string }[] = []
   on('agent.list', () => ({ value: agents as never }))
+  // What $.session.model() answers (the model /model shows): '' means the session does not say.
+  const model = { name: '' }
+  on('session.model', () => ({ value: model.name as never }))
   // A model request that streams one chunk, then waits until the test lets it finish.
   const step = { release: (): void => {}, usage: null as unknown, toolUses: [] as unknown[] }
   on('turn.step', async function* (_, e) {
@@ -64,7 +68,7 @@ function world(on: On, shown = true, openReason?: string, surfaces?: string[]) {
     await gate
     return { turnId: e.turnId, index: e.index, answer: '', toolUses: step.toolUses, stopReason: 'end_turn', usage: step.usage } as never
   })
-  return { clock, panes, counts, hold, step, perm, agents, sent, sounds, toasts, notes }
+  return { clock, panes, counts, hold, step, perm, agents, sent, sounds, toasts, notes, model }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -716,9 +720,9 @@ test('more subagents than boardroom seats stand, then are counted at the door', 
   await $.prompt.submit(prompt('Fan out'))
   await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
   for (let i = 1; i <= 10; i++) await (await stepOpen($, w, `a${i}`))()
-  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 2 standing')
+  expect(await crew($)).toContain('Boardroom: 7 subagent(s) seated, 3 standing') // the eighth seat is the chair's
   for (let i = 11; i <= 17; i++) await (await stepOpen($, w, `a${i}`))()
-  expect(await crew($)).toContain('Boardroom: 8 subagent(s) seated, 6 standing, +3 counted at the door')
+  expect(await crew($)).toContain('Boardroom: 7 subagent(s) seated, 6 standing, +4 counted at the door')
   expect(await crew($)).toContain('+9 more machines') // the text rows count every run too
 })
 
@@ -1425,3 +1429,206 @@ test('picture: false opens the pane as text only, and it redraws only for new te
   await ui.unmount()
 })
 
+// ---- model aliens ----
+test('the main loop\'s model chairs the boardroom table: running in a turn, resting after, and it follows a model switch', async ($, on) => {
+  const w = world(on)
+  await start($)
+  expect(await crew($)).not.toContain('Chair:') // no request seen yet: the chair is empty
+  await $.prompt.submit(prompt('Hello'))
+  await $.turn.start({ text: 'Hello', turnId: 't1' } as never)
+  const done = await stepOpen($, w) // a request on claude-opus-5-5
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus 5.5 (red top hat) · running')
+  await done()
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 1000, 100) } as never)
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus 5.5 (red top hat) · resting')
+  // the person switches the model: the next request seats that model's alien
+  await $.prompt.submit(prompt('Again'))
+  const it = $.turn.step({ turnId: 't2', index: 0, model: 'claude-fable-5-2', effort: 'high', messageCount: 5 })[Symbol.asyncIterator]()
+  await it.next()
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · running')
+  w.step.release()
+  await it.next()
+})
+
+test('each subagent is its model\'s alien, and the agent detail names how to tell it apart', async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.prompt.submit(prompt('Fan out'))
+  await $.turn.start({ text: 'Fan out', turnId: 't1' } as never)
+  const open = async (agentId: string, model: string) => {
+    const it = $.turn.step({ turnId: 't1', index: 0, model, messageCount: 3, agentId })[Symbol.asyncIterator]()
+    await it.next()
+    return async () => { w.step.release(); await it.next() }
+  }
+  await (await open('a1', 'claude-sonnet-5-5'))()
+  await (await open('a2', 'claude-haiku-5-5'))()
+  await (await open('a3', 'mystery-model'))()
+  await w.clock.advance(250)
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const [key, how] of [['a1', 'quill, one eye'], ['a2', 'leaf sprout'], ['a3', 'antennae']] as const) {
+    await ui.press({ key: `agent-${key}` })
+    ui = await remount($, ui)
+    expect(await ui.find({ type: 'Text', text: `    In the boardroom: ${how}` })).toBeDefined()
+  }
+  await ui.unmount()
+})
+test('only the alien changes with the model: the chair and its tag, and a subagent at its seat', () => {
+  const seeded = (a: number) => () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  // the same office, the same events, another model: the boardroom, one room in view (240 x 176)
+  const frame = (main: string, sub: string): Uint32Array => {
+    const o = createOffice({ random: seeded(5), theme: 'night', motion: 'reduced', zoom: 1 })
+    o.setAutoCam(false); o.goRoom(3)
+    o.startMission('Compare'); o.machineStep('main', main); o.machineStep('s1', sub); o.machineStepEnd('s1')
+    for (let k = 0; k < 12; k++) o.advance(0.25)
+    return o.render().base.u32.slice()
+  }
+  /** The box around every pixel that differs, or null when the frames are the same. */
+  const diffBox = (a: Uint32Array, b: Uint32Array): { x0: number; x1: number; y0: number; y1: number } | null => {
+    let box: { x0: number; x1: number; y0: number; y1: number } | null = null
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] === b[i]) continue
+      const x = i % 240, y = Math.floor(i / 240)
+      box = box ? { x0: Math.min(box.x0, x), x1: Math.max(box.x1, x), y0: Math.min(box.y0, y), y1: Math.max(box.y1, y) } : { x0: x, x1: x, y0: y, y1: y }
+    }
+    return box
+  }
+  const base = frame('claude-opus-5-5', 'claude-sonnet-5-5')
+  expect(diffBox(base, frame('claude-opus-5-5', 'claude-sonnet-5-5'))).toBeNull() // the run is repeatable
+  // another main model: only the chair (the left head of the table, seat at 57,86) and its tag above it
+  const chair = diffBox(base, frame('claude-fable-5-2', 'claude-sonnet-5-5'))!
+  expect(chair).not.toBeNull()
+  expect(chair.x0).toBeGreaterThanOrEqual(34); expect(chair.x1).toBeLessThanOrEqual(82)
+  expect(chair.y0).toBeGreaterThanOrEqual(50); expect(chair.y1).toBeLessThanOrEqual(92)
+  // another subagent model: only the first subagent seat (90,74)
+  const seat = diffBox(base, frame('claude-opus-5-5', 'claude-haiku-5-5'))!
+  expect(seat).not.toBeNull()
+  expect(seat.x0).toBeGreaterThanOrEqual(84); expect(seat.x1).toBeLessThanOrEqual(96)
+  expect(seat.y0).toBeGreaterThanOrEqual(50); expect(seat.y1).toBeLessThanOrEqual(76)
+})
+
+test('the chair is seated from the session\'s own model: at start, and within 5 s of a switch, with no request', async ($, on) => {
+  const w = world(on)
+  w.model.name = 'claude-opus-5-5[1m]'
+  await start($)
+  await w.clock.advance(250)
+  let s = await crew($)
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · resting') // before any message
+  expect(s).not.toContain('main ·') // seated only: no compute row, nothing powered on
+  expect(s).toContain('Phase: Idle')
+  // /model: the session now runs on another model
+  w.model.name = 'claude-fable-5-2'
+  for (let i = 0; i < 6; i++) await w.clock.advance(1000)
+  expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · resting')
+  // the first request still opens the turn and powers the main machine on
+  await $.prompt.submit(prompt('Hello'))
+  const done = await stepOpen($, w)
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(s).toContain('● main · opus 5.5') // the request's own model names the run while it works
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · running')
+  await done()
+})
+
+
+// ---- audit: the full workflow, every feature in one session ----
+test('audit: text only in a terminal with crew "cards" still shows the crew', { options: { crew: 'cards', picture: false } }, async ($, on) => {
+  world(on)
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'crew-pax' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('audit: full workflow — seat, plan, subagents, approval, question, ship, replay, text only', async ($, on) => {
+  const w = world(on)
+  w.model.name = 'claude-opus-5-5'
+  await start($)
+  await w.clock.advance(250)
+  let s = await crew($)
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · resting')
+  // a prompt in plan mode: the crew meets at the table and leaves the chair's seat free
+  await $.prompt.submit(prompt('Build the feature'))
+  await $.classic.UserPromptSubmit({ prompt: 'Build the feature', permission_mode: 'plan' } as never)
+  for (let i = 0; i < 12; i++) await w.clock.advance(500)
+  s = await crew($)
+  expect(s).toContain('Phase: Planning (plan mode)')
+  const main = await stepOpen($, w)
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus 5.5 (red top hat) · running')
+  await main() // the test kit holds one model request open at a time
+  // the plan is approved; a todo list; a subagent on another model
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'Do it' } as never)
+  await $.tool.call({ tool: 'TodoWrite', todos: [{ content: 'Build', status: 'in_progress', activeForm: 'Building' }, { content: 'Ship', status: 'pending', activeForm: 'Shipping' }] } as never)
+  const sub1 = await (async () => { const it = $.turn.step({ turnId: 't1', index: 0, model: 'claude-haiku-5-5', messageCount: 3, agentId: 'a1' })[Symbol.asyncIterator](); await it.next(); return it })()
+  await w.clock.advance(250)
+  s = await crew($)
+  expect(s).toContain('Boardroom: 1 subagent(s) seated')
+  // a command needs approval: one alert
+  const deploy = $.tool.call({ tool: 'Bash', command: 'deploy hold' } as never)
+  await w.clock.advance(250)
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'deploy hold' } } as never)
+  await w.clock.advance(250)
+  expect(w.sounds.filter(a => a === 'sounds/alert.wav')).toHaveLength(1)
+  expect(await crew($)).toContain('▲ Claude needs you')
+  w.hold.release()
+  await deploy
+  // the subagent and the main loop finish; the work ships
+  w.step.release(); await sub1.next()
+  await $.turn.complete({ ...turnDone, agentId: 'a1', usage: usage('claude-haiku-5-5', 500, 50) } as never)
+  await $.tool.call({ tool: 'Bash', command: 'git push origin main' } as never)
+  await $.turn.complete({ ...turnDone, usage: usage('claude-opus-5-5', 2000, 200) } as never)
+  for (let i = 0; i < 8; i++) await w.clock.advance(500)
+  s = await crew($)
+  expect(s).toMatch(/Phase: Live demo at the town hall/)
+  expect(s).toContain('Chair: opus 5.5 (red top hat) · resting')
+  // replay, then text only (which stops the replay), then the picture again
+  let ui: Mounted = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'replay' })
+  expect(await crew($)).toContain('replay playing')
+  ui = await remount($, ui)
+  await ui.press({ key: 'picture' })
+  s = await crew($)
+  expect(s).not.toContain('replay')
+  expect(s).toContain('picture off (text only)')
+  ui = await remount($, ui)
+  await ui.press({ key: 'picture' })
+  ui = await remount($, ui)
+  expect(await ui.find({ type: 'Svg' })).toBeDefined()
+  await ui.unmount()
+  // the session's model changes between turns: the chair follows within 5 s
+  w.model.name = 'claude-sonnet-5-5'
+  for (let i = 0; i < 6; i++) await w.clock.advance(1000)
+  expect(await crew($)).toContain('Chair: sonnet 5.5 (quill, one eye) · resting')
+})
+
+test('audit: the IT lab racks light only runs that ran (a seated chair has none)', () => {
+  const seeded = (a: number) => () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  const lab = (seat: boolean): Uint32Array => {
+    const o = createOffice({ random: seeded(3), theme: 'night', motion: 'reduced', zoom: 1 })
+    o.setAutoCam(false); o.goRoom(6)
+    if (seat) o.setMainModel('claude-opus-5-5')
+    for (let i = 0; i < 4; i++) o.advance(0.25)
+    return o.render().base.u32.slice()
+  }
+  const a = lab(false), b = lab(true)
+  let differ = 0
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differ++
+  expect(differ).toBe(0)
+})
+
+test('audit: a model switch reaches the chair at once, with the full model id', async ($, on) => {
+  const w = world(on)
+  on('classic.PostModelSwitch', () => ({}))
+  w.model.name = 'opus' // the session's own name for its model: an alias here
+  await start($)
+  await w.clock.advance(250)
+  expect(await crew($)).toContain('Chair: opus (red top hat)')
+  w.model.name = 'fable'
+  await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-fable-5-2', requested_model: 'fable', source: 'command' } as never)
+  expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · resting') // no wait
+  for (let i = 0; i < 8; i++) await w.clock.advance(1000)
+  expect(await crew($)).toContain('Chair: fable 5.2') // the 5 s read keeps the full id, not the alias
+})
