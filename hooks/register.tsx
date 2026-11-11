@@ -754,6 +754,17 @@ function signature(o: Office): string {
  */
 let sessionModel = ''
 let modelAt = -Infinity
+/**
+ * A model switch (/model, the picker, a fallback, a resume): the resolved model
+ * id goes to the chair at once. The session's own name for it is read now too,
+ * so the 5 s read does not then replace the full id with an alias.
+ */
+async function modelSwitched($: Engine, to: string): Promise<void> {
+  if (!to) return
+  try { ensureOffice().setMainModel(to) } catch { /* never in the way */ }
+  try { sessionModel = String((await $.session.model()) ?? '') } catch { /* not offered here */ }
+  modelAt = ensureOffice().simT
+}
 async function readModel($: Engine, simT: number): Promise<void> {
   if (simT - modelAt < 5) return
   modelAt = simT
@@ -1077,6 +1088,12 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    const r = await next(e)
+    await modelSwitched($, String((e as { to_model?: unknown }).to_model ?? ''))
+    return r
+  }).catch(($, e, next) => next(e))
+
   // Plan mode: every classic event reports the session's permission mode. A
   // prompt or a tool call in plan mode starts the boardroom meeting; one in
   // another mode ends it.
@@ -1273,12 +1290,26 @@ export const register: Register = (on, options) => {
 
     // Compact: one chip per crew member (name, role, a dot while working). Pressing
     // one follows them and opens their detail and recent calls below.
-    const chips = opts.crew === 'compact' && (
+    const crewChips = opts.crew === 'compact' && (
       <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
         {crew.map(c => (
           <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
             <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>{c.working ? <Text color={c.color}> ●</Text> : ''}
           </Button>
+        ))}
+      </Box>
+    )
+
+    // The terminal's crew: chips, or a name and a status line each (crew "cards").
+    const termCrew = crewChips || (
+      <Box key="crew" flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {crew.map(c => (
+          <Box key={`card-${c.id}`} flexDirection="column" width={26}>
+            <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
+              <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
+            </Button>
+            <Text dimColor wrap="truncate-end">{c.status}</Text>
+          </Box>
         ))}
       </Box>
     )
@@ -1300,7 +1331,7 @@ export const register: Register = (on, options) => {
             {computeBox}
             {controls}
             {quick}
-            {chips}
+            {termCrew}
             {history}
           </Box>
         )
@@ -1329,16 +1360,7 @@ export const register: Register = (on, options) => {
           {roomRow}
           {controls}
           {quick}
-          {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-            {crew.map(c => (
-              <Box key={`card-${c.id}`} flexDirection="column" width={26}>
-                <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
-                  <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
-                </Button>
-                <Text dimColor wrap="truncate-end">{c.status}</Text>
-              </Box>
-            ))}
-          </Box>}
+          {termCrew}
           {history}
         </Box>
       )
@@ -1356,7 +1378,7 @@ export const register: Register = (on, options) => {
           {cardList}
           {computeBox}
           {quick}
-          {chips || <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
+          {crewChips || <Box key="crew" flexDirection="row" flexWrap="wrap" {...gaps}>
             {crew.map(c => (
               <Button key={`crew-${c.id}`} variant={c.selected ? 'primary' : undefined} onPress={() => { o.toggleFollow(c.id); redraw() }}>
                 <Text color={c.color} bold>{c.name}</Text> <Text dimColor>{c.roleLabel}</Text>
@@ -1384,7 +1406,7 @@ export const register: Register = (on, options) => {
         {cardList}
         {computeBox}
         {quick}
-        {chips || <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+        {crewChips || <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
           {crew.map(c => (
             <Box key={`card-${c.id}`} flexDirection="row" gap={1} width="48%" alignItems="flex-start">
               <Svg source={spriteSvg(o, c.id)} alt={`${c.name}, ${c.roleLabel}`} width={26} height={40} />

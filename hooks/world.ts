@@ -1665,7 +1665,7 @@ export function createOffice(opts: OfficeOptions = {}): Office {
   function drawCompute() {
     // The IT lab's racks are the compute view: one rack unit per run (main loop
     // first, then subagents), lit in its model's colour while it runs, dim after.
-    const all = [...machines.values()].sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
+    const all = [...machines.values()].filter(m => m.key !== 'main' || m.requests > 0).sort((p, q) => (p.key === 'main' ? -1 : q.key === 'main' ? 1 : p.seq - q.seq));
     // Past 24 runs the last unit counts the rest instead of showing one more.
     const list = all.length > 24 ? all.slice(0, 23) : all;
     if (all.length > 24) {
