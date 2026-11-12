@@ -359,7 +359,7 @@ const CELL_H = 20.5
  * app: 2 rows needed about 410 px, 6 rows about 460 px; these keep a margin.
  */
 const TEXT_ROW_PX = 16
-const CHROME_PX = 184
+const CHROME_PX = 192
 /**
  * The crew block under the picture. As cards: three rows, about 206 px
  * (measured). Compact: one row of chips, about 36 px, two rows where the pane
@@ -817,9 +817,10 @@ async function tick($: Engine): Promise<void> {
       // Svg surfaces play a film on their own: redraw for a new film or new text only.
       // A paused replay shows a still frame.
       if (!drawnAt) drawnAt = now
+      const asleep = dormant()
       if (pictures) {
         const sig = signature(v)
-        if (dormant()) {
+        if (asleep) {
           // Not drawn lately: no films; new text or a probe asks for a draw.
           if (sig !== paneSig || now - probeAt >= PROBE_MS) { paneSig = sig; probeAt = now; redraw = true }
         } else {
@@ -828,7 +829,9 @@ async function tick($: Engine): Promise<void> {
         }
       }
       // Terminals redraw every frame; an idle office needs only a quarter of the rate.
-      if (terminal && pictureOn && !replay?.paused && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      // A terminal pane that is not drawn (another tab, a hidden pane) asks only now and then, like a picture.
+      if (terminal && pictureOn && !replay?.paused && !asleep && (v.ticker().phase !== 'Idle' || frameNo % 4 === 0)) redraw = true
+      if (terminal && asleep && now - probeAt >= PROBE_MS) { probeAt = now; redraw = true }
       // Text only on a terminal: redraw for new text, not every frame.
       if (terminal && !pictureOn && !pictures) { const sig = signature(v); if (sig !== paneSig) { paneSig = sig; redraw = true } }
       if (redraw) $.ui.invalidate('ui.render')
@@ -1197,8 +1200,9 @@ export const register: Register = (on, options) => {
       resetStage()
       redraw()
     }
-    const pictureButton = <Button key="picture" label={pictureOn ? 'Picture on' : 'Picture off'} variant={pictureOn ? 'primary' : undefined} onPress={togglePicture} />
-    const soundButton = <Button key="sound" label={soundBroken ? 'No audio here' : soundOn ? 'Sound on' : 'Sound off'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
+    // Short labels keep the controls on one row: a highlighted button is on.
+    const pictureButton = <Button key="picture" label="Picture" variant={pictureOn ? 'primary' : undefined} onPress={togglePicture} />
+    const soundButton = <Button key="sound" label={soundBroken ? 'No audio here' : 'Sound'} variant={soundOn ? 'primary' : undefined} onPress={() => { if (!soundBroken) setSound($, !soundOn); redraw() }} />
     // Text only: the strip, ticker, compute rows and crew stay; the picture and its room and camera buttons go.
     const controls = !pictureOn ? (
       <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
@@ -1208,14 +1212,14 @@ export const register: Register = (on, options) => {
       </Box>
     ) : (
       <Box key="controls" flexDirection="row" flexWrap="wrap" {...gaps} alignItems="center">
-        {!terminal && (paneFit?.cols ?? 0) >= 110 && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
+        {!terminal && (paneFit?.cols ?? 0) >= 160 && <Text dimColor>{o.zoom > 1 ? 'Rooms in view · tap a room to pin it' : 'Rooms in view'}</Text>}
         {[1, 2, 3].map(z => <Button key={`zoom-${z}`} label={String(z)} variant={o.zoom === z ? 'primary' : undefined} onPress={() => { o.setZoom(z); redraw() }} />)}
-        <Button key="cam" label="Auto camera" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
+        <Button key="cam" label="Auto cam" variant={o.autoCam ? 'primary' : undefined} onPress={() => { o.setAutoCam(!o.autoCam); redraw() }} />
         {o.pinned.length > 0 && <Button key="unpin" label="Unpin" onPress={() => { o.clearPins(); redraw() }} />}
         {soundButton}
         {pictureButton}
         <Button key="screen" label={`Screen: ${PAGE_NAMES[o.screenPage]}`} onPress={flipScreen} />
-        {!replay && live.replaySize > 1 && <Button key="replay" label="▶ Replay task" onPress={() => { if (startReplay()) redraw() }} />}
+        {!replay && live.replaySize > 1 && <Button key="replay" label="▶ Replay" onPress={() => { if (startReplay()) redraw() }} />}
       </Box>
     )
     const r = replay

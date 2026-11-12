@@ -33,7 +33,7 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
 - The split view's second slot stays on the Open office (the Town hall during a ship), even when the crew takes a break elsewhere.
 - The camera shows the Boardroom for planning (briefings) only: Zorya's own tool calls and thinking stay off camera, though the strip and the pinned Boardroom still show them.
 - `/workplace` shows or hides the pane. `/workplace show`, `/workplace hide` and `/workplace status` also work.
-- In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto camera, the crew strip (press a name to follow that agent) and Sound.
+- In the pane: room tabs (‹ ›), rooms in view (1, 2, 3), Auto cam, the crew strip (press a name to follow that agent) and Sound.
 - **When Claude needs you:** when a permission dialog or a question waits for you, the office plays a short chime, shows a toast, and puts `▲ Claude needs you · …` at the top of the pane and in the status line. A question's banner stays until you answer. An approval's banner leaves after a minute, because no event says when you answer one; the call's own line still says `asked for your OK`. The chime plays once per request and does not need the Sound button. Set `needsYou` to `banner` (no sound or toast), `notify` (adds a native notification) or `off`.
 - **Text only:** the **Picture** button turns the office picture off. The strip, ticker, compute rows and crew stay, nothing is filmed or sent, and the pane redraws only when its text changes, so it costs almost no CPU. Set `picture` to `false` to open the pane this way.
 - **Room tabs:** the tab row shows the three work rooms (Town hall, Boardroom, Open office) and any room in view. **+N rooms** shows the rest; the coloured squares on it are crew members in those rooms.
@@ -43,7 +43,7 @@ In the Claude desktop app, where `/plugin` does not run: click **+** next to the
   - **Agent detail:** press a compute row (`main` or a subagent) for its task, type, model and effort, requests, tokens and latest tool call.
   - **Plan cards:** **Cards ▸** beside the ticker lists the plan's cards; press one for its state, how long it was in progress, and which crew members had calls meanwhile (plan items name no crew member, so this is a time overlap).
   - **Screen:** flips the Boardroom screen between this turn's KPIs, the session so far (tokens, calls, requests, time open) and the plan's usage windows (or an API key's dollars).
-  - **▶ Replay task:** plays the latest task again in a second office, in order, with pauses over 2 s shortened. **⏸ Pause**, **↺ Again**, and **■ Live** to go back. The live office keeps running meanwhile, and the status bar stays live.
+  - **▶ Replay:** plays the latest task again in a second office, in order, with pauses over 2 s shortened. **⏸ Pause**, **↺ Again**, and **■ Live** to go back. The live office keeps running meanwhile, and the status bar stays live.
   - **Quick actions** (off by default, see `quickActions`): Run tests, Review, Commit, Status.
 - **Pinned rooms:** with 2 or 3 rooms in view, pressing a room tab pins it (◆). Pinned rooms show side by side even when they are not neighbours, for example Town hall + Boardroom + Open office for the whole plan → work → ship flow. A free slot follows the camera. Pinning a room past the view's size replaces the oldest pin; **Unpin** clears them. With 1 room in view, tabs go to the room as before.
 - In a cloud session the app gives mods no drawing surface. `/workplace` then says so in one line.

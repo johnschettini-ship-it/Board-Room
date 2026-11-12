@@ -1323,7 +1323,9 @@ test('crew "cards" keeps the larger cards and the smaller picture', { options: {
 })
 
 // ---- "Claude needs you" ----
-test('a permission dialog chimes once, shows a toast and a banner, and the banner goes after a minute', async ($, on) => {
+// These two hold a call open for a minute or more of office time; the test kit's
+// own cost per pending call makes them take about 4 s (the office itself: 0.1 s).
+test('a permission dialog chimes once, shows a toast and a banner, and the banner goes after a minute', { timeoutMs: 15000 }, async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Deploy it'))
@@ -1351,7 +1353,7 @@ test('a permission dialog chimes once, shows a toast and a banner, and the banne
   await running
 })
 
-test('a question to the person alerts at once and its banner stays until it is answered', { options: { needsYou: 'notify' } }, async ($, on) => {
+test('a question to the person alerts at once and its banner stays until it is answered', { options: { needsYou: 'notify' }, timeoutMs: 15000 }, async ($, on) => {
   const w = world(on)
   await start($)
   await $.prompt.submit(prompt('Plan the intro'))
@@ -1631,4 +1633,22 @@ test('audit: a model switch reaches the chair at once, with the full model id', 
   expect(await crew($)).toContain('Chair: fable 5.2 (wizard hat, three eyes) · resting') // no wait
   for (let i = 0; i < 8; i++) await w.clock.advance(1000)
   expect(await crew($)).toContain('Chair: fable 5.2') // the 5 s read keeps the full id, not the alias
+})
+
+test('a terminal pane that is not drawn is not asked to redraw every frame while Claude works', async ($, on) => {
+  const w = world(on, true, undefined, ['terminal'])
+  await start($)
+  const ui: Mounted = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await $.prompt.submit(prompt('Work'))
+  const running = $.tool.call({ tool: 'Bash', command: 'build hold' } as never)
+  let before = w.counts.invalidate
+  await w.clock.advance(1000)
+  expect(w.counts.invalidate - before).toBeGreaterThanOrEqual(7) // drawn: every frame
+  await ui.unmount() // nothing draws it any more
+  await w.clock.advance(4000)
+  before = w.counts.invalidate
+  await w.clock.advance(4000)
+  expect(w.counts.invalidate - before).toBeLessThanOrEqual(3) // a probe every 2 s
+  w.hold.release()
+  await running
 })
